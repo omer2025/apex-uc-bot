@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -55,7 +54,10 @@ async def select_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pkg_details"] = pkg
     currency = context.user_data["currency"]
     price = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
-    await query.edit_message_text(f"✅ You selected: *{pkg['uc']} UC* — *{price}*\n\n📝 Please enter your *PUBG Mobile Player ID*:\n\n_(Find it in PUBG Mobile → Profile)_", parse_mode="Markdown")
+    await query.edit_message_text(
+        f"✅ You selected: *{pkg['uc']} UC* — *{price}*\n\n📝 Please enter your *PUBG Mobile Player ID*:\n\n_(Find it in PUBG Mobile → Profile)_",
+        parse_mode="Markdown"
+    )
     return ENTER_PLAYER_ID
 
 async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,10 +65,22 @@ async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["player_id"] = player_id
     currency = context.user_data["currency"]
     if currency == "usd":
-        keyboard = [[InlineKeyboardButton("💎 USDT (TRC20)", callback_data="pay_usdt")],[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]
+        keyboard = [
+            [InlineKeyboardButton("💎 USDT (TRC20)", callback_data="pay_usdt")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_start")],
+        ]
     else:
-        keyboard = [[InlineKeyboardButton("📲 HesabPay", callback_data="pay_hesabpay")],[InlineKeyboardButton("⚡ AtomPay", callback_data="pay_atompay")],[InlineKeyboardButton("🏦 Azizi Bank", callback_data="pay_azizi")],[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]
-    await update.message.reply_text(f"✅ Player ID saved: *{player_id}*\n\n💳 *Select payment method:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("📲 HesabPay", callback_data="pay_hesabpay")],
+            [InlineKeyboardButton("⚡ AtomPay", callback_data="pay_atompay")],
+            [InlineKeyboardButton("🏦 Azizi Bank", callback_data="pay_azizi")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_start")],
+        ]
+    await update.message.reply_text(
+        f"✅ Player ID saved: *{player_id}*\n\n💳 *Select payment method:*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return SELECT_PAYMENT
 
 async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,7 +99,10 @@ async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = f"⚡ *Send via AtomPay to:*\n\n`{HESABPAY_NUMBER}`\n\n💰 Amount: *{price}*"
     else:
         info = f"🏦 *Send via Azizi Bank:*\n\nContact: {HESABPAY_NUMBER}\n\n💰 Amount: *{price}*"
-    await query.edit_message_text(f"{info}\n\n📸 After payment, send your *payment screenshot* to confirm your order.", parse_mode="Markdown")
+    await query.edit_message_text(
+        f"{info}\n\n📸 After payment, send your *payment screenshot* to confirm your order.",
+        parse_mode="Markdown"
+    )
     return SEND_SCREENSHOT
 
 async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,7 +112,15 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
     payment = context.user_data["payment"]
     price = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
     user = update.message.from_user
-    admin_msg = f"🔔 *NEW UC ORDER!*\n\n👤 {user.first_name} {user.last_name or ''}\n🆔 @{user.username or 'N/A'} ({user.id})\n🎮 Package: {pkg['uc']} UC\n💰 Price: {price}\n🎯 Player ID: {player_id}\n💳 Payment: {payment.upper()}"
+    admin_msg = (
+        f"🔔 *NEW UC ORDER!*\n\n"
+        f"👤 {user.first_name} {user.last_name or ''}\n"
+        f"🆔 @{user.username or 'N/A'} ({user.id})\n"
+        f"🎮 Package: {pkg['uc']} UC\n"
+        f"💰 Price: {price}\n"
+        f"🎯 Player ID: {player_id}\n"
+        f"💳 Payment: {payment.upper()}"
+    )
     try:
         if update.message.photo:
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=admin_msg, parse_mode="Markdown")
@@ -103,21 +128,37 @@ async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg + "\n\n⚠️ No screenshot received!", parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Admin notify failed: {e}")
-    await update.message.reply_text("✅ *Order Received!*\n\n" + f"🎮 Package: *{pkg['uc']} UC*\n🎯 Player ID: *{player_id}*\n💰 Amount: *{price}*\n\n⏳ Your UC will be sent within *30 minutes*.\nThank you for choosing *Apex Digital House!* 🚀\n\nType /start to make another order.", parse_mode="Markdown")
+    await update.message.reply_text(
+        "✅ *Order Received!*\n\n"
+        f"🎮 Package: *{pkg['uc']} UC*\n"
+        f"🎯 Player ID: *{player_id}*\n"
+        f"💰 Amount: *{price}*\n\n"
+        "⏳ Your UC will be sent within *30 minutes*.\n"
+        "Thank you for choosing *Apex Digital House!* 🚀\n\n"
+        "Type /start to make another order.",
+        parse_mode="Markdown"
+    )
     return ConversationHandler.END
 
 async def back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("💵 Pay in USD (USDT)", callback_data="currency_usd")],[InlineKeyboardButton("🇦🇫 Pay in Afghani (AFN)", callback_data="currency_afn")]]
-    await query.edit_message_text("🎮 *Welcome to Apex Digital House UC Store!*\n\nPlease select your preferred currency:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [
+        [InlineKeyboardButton("💵 Pay in USD (USDT)", callback_data="currency_usd")],
+        [InlineKeyboardButton("🇦🇫 Pay in Afghani (AFN)", callback_data="currency_afn")],
+    ]
+    await query.edit_message_text(
+        "🎮 *Welcome to Apex Digital House UC Store!*\n\nPlease select your preferred currency:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return SELECT_CURRENCY
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled. Type /start to begin again.")
     return ConversationHandler.END
 
-async def main():
+if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -132,7 +173,4 @@ async def main():
     )
     app.add_handler(conv)
     print("🤖 Apex UC Bot is running...")
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.run_polling()
