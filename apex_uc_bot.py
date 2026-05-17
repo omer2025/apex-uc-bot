@@ -169,7 +169,7 @@ if __name__ == "__main__":
             SELECT_PAYMENT: [CallbackQueryHandler(select_payment, pattern="^pay_"), CallbackQueryHandler(back_start, pattern="^back_start$")],
             SEND_SCREENSHOT: [MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_screenshot)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
     app.add_handler(conv)
     print("🤖 Apex UC Bot is running...")
