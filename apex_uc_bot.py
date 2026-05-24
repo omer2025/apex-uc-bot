@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-BOT_TOKEN = "8602835129:AAFGXQsEUBpWChMbZ9K5iy7wMEOLfM3wwaw"
+BOT_TOKEN = "8602835129:AAFDQUurBf-xqGyH_ewxzfUgmfjWLKG_uWU"
 ADMIN_ID = 8556241073
 USDT_WALLET = "TUUrCxQexypGX8wmXMeNf6mRq2PFFK9Jvz"
 HESABPAY_NUMBER = "+93 789 077 537"
