@@ -44,22 +44,57 @@ bot_app = None  # set in main
 # ── HesabPay ──────────────────────────────────────────────────────────────
 async def create_hesabpay_session(pkg_key, player_id, user_id):
     pkg = PACKAGES[pkg_key]
-    headers = {"Authorization": HESABPAY_API_KEY, "Content-Type": "application/json"}
+    headers = {
+        "Authorization": HESABPAY_API_KEY,
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
+    # Try multiple payload formats since HesabPay docs are not fully public
     payload = {
-        "products": [{"name": f"PUBG {pkg['uc']} UC - Player {player_id}", "quantity": 1, "price": pkg["usd"]}],
-        "metadata": {"user_id": str(user_id), "pkg_key": pkg_key, "player_id": player_id},
-        "currency": "USD",
+        "amount":      pkg["usd"],
+        "currency":    "USD",
+        "description": f"PUBG {pkg['uc']} UC - Player ID: {player_id}",
+        "reference":   f"{user_id}-{pkg_key}",
+        "products": [{
+            "name":     f"PUBG {pkg['uc']} UC",
+            "quantity": 1,
+            "price":    pkg["usd"],
+        }],
+        "metadata": {
+            "user_id":   str(user_id),
+            "pkg_key":   pkg_key,
+            "player_id": str(player_id),
+        },
     }
     try:
         async with aiohttp_client.ClientSession() as s:
-            async with s.post(HESABPAY_CREATE, json=payload, headers=headers, timeout=aiohttp_client.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                logging.info(f"HesabPay create-session: {data}")
-                url        = data.get("url") or data.get("payment_url") or data.get("session_url")
-                session_id = data.get("session_id") or data.get("id")
-                if url and session_id:
-                    pending_orders[session_id] = {"user_id": user_id, "pkg_key": pkg_key, "player_id": player_id}
-                return url
+            async with s.post(
+                HESABPAY_CREATE,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp_client.ClientTimeout(total=15),
+            ) as r:
+                text = await r.text()
+                logging.info(f"HesabPay status={r.status} response={text}")
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    logging.error(f"HesabPay non-JSON response: {text}")
+                    return None
+                # Try all possible URL field names
+                url = (data.get("url") or data.get("payment_url") or
+                       data.get("session_url") or data.get("checkout_url") or
+                       data.get("redirect_url") or data.get("link"))
+                session_id = (data.get("session_id") or data.get("id") or
+                              data.get("transaction_id") or data.get("reference"))
+                if url:
+                    sid = session_id or f"{user_id}-{pkg_key}"
+                    pending_orders[sid] = {
+                        "user_id": user_id, "pkg_key": pkg_key, "player_id": player_id
+                    }
+                    return url
+                logging.error(f"HesabPay no URL in response: {data}")
+                return None
     except Exception as e:
         logging.error(f"HesabPay create-session error: {e}")
         return None
@@ -317,7 +352,20 @@ async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⏳ Creating your payment link…")
     pay_url = await create_hesabpay_session(pkg_key, player_id, user_id)
     if not pay_url:
-        await query.edit_message_text(f"❌ Could not create payment link.\nContact: {TELEGRAM_SUPPORT}")
+        # Fallback to manual payment
+        await query.edit_message_text(
+            f"💳 *Pay via HesabPay*\n\n"
+            f"🎮 Package: *{pkg['uc']} UC*\n"
+            f"💰 Amount: *{pkg['afn']} AFN*\n"
+            f"🎯 Player ID: `{player_id}`\n\n"
+            f"📲 Send payment to:\n`+93 789 077 537`\n\n"
+            "📸 After paying, send your screenshot here and admin will confirm.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back", callback_data="back_start")
+            ]]),
+        )
+        context.user_data.clear()
         return ConversationHandler.END
     await query.edit_message_text(
         f"💳 *Your HesabPay Payment Link is Ready!*\n\n"
