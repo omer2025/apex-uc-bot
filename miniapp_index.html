@@ -177,6 +177,9 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min
       <div class="chevron">›</div>
     </div>
   </div>
+  <div class="section-label">UC DEALS</div>
+  <div class="card-list" id="homeUcList"></div>
+
   <div class="section-label">SUPPORT</div>
   <div class="card-list">
     <div class="service-card" onclick="navTo('support')">
@@ -267,7 +270,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min
 <!-- BOTTOM NAV -->
 <nav class="bottom-nav">
   <div class="nav-item active" id="nav-home" onclick="navTo('home')"><span class="nav-icon">🏠</span>Home</div>
-  <div class="nav-item" id="nav-buy" onclick="navTo('buy')"><span class="nav-icon">🎮</span>Buy UC</div>
+  <div class="nav-item" id="nav-buy" onclick="navTo('buy')"><span class="nav-icon">🎮</span>UC Deals</div>
   <div class="nav-item" id="nav-account" onclick="navTo('account')"><span class="nav-icon">👤</span>Account</div>
   <div class="nav-item" id="nav-support" onclick="navTo('support')"><span class="nav-icon">💬</span>Support</div>
 </nav>
@@ -344,6 +347,7 @@ function init(){
   document.getElementById('acctName').textContent=name;
   document.getElementById('acctId').textContent='Telegram ID: '+(state.userId||'—');
   renderPackages();renderPresets();updateBalanceDisplay();
+  fetchStock(); // loads live stock from bot, then re-renders home + buy page
 }
 
 function navTo(page){
@@ -363,11 +367,14 @@ function updateBalanceDisplay(){
 function renderPackages(){
   const grid=document.getElementById('pkgGrid');grid.innerHTML='';
   Object.entries(PACKAGES).forEach(([key,pkg])=>{
+    const stock    = liveStock[key] !== undefined ? liveStock[key] : '?';
+    const hasStock = stock > 0;
     const price=state.currency==='afn'?pkg.afn+' AFN':'$'+pkg.usd;
     const div=document.createElement('div');
     div.className='pkg-card'+(state.selPkg===key?' selected':'');
-    div.onclick=()=>selectPackage(key);
-    div.innerHTML=`<div class="pkg-uc">${pkg.uc}</div><div class="pkg-label">UC</div><div class="pkg-price">${price}</div><div class="pkg-stock in-stock">✅ In Stock</div>`;
+    div.style.opacity = hasStock ? '1' : '0.45';
+    div.onclick= hasStock ? ()=>selectPackage(key) : null;
+    div.innerHTML=`<div class="pkg-uc">${pkg.uc}</div><div class="pkg-label">UC</div><div class="pkg-price">${price}</div><div class="pkg-stock ${hasStock ? 'in-stock' : 'out-stock'}">${stock==='?' ? '⏳ Checking…' : hasStock ? '✅ In Stock ('+stock+')' : '❌ Out of Stock'}</div>`;
     grid.appendChild(div);
   });
 }
@@ -477,6 +484,48 @@ function refreshAccount(){
 function addHistory(icon,title,sub,amount){state.history.unshift({icon,title,sub,amount});}
 function closeSheet(id){document.getElementById(id).classList.remove('open');}
 function showToast(msg,type=''){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type+' show';setTimeout(()=>t.classList.remove('show'),2800);}
+
+// ── Live stock from bot server ─────────────────────────────────────────
+// Change this to your Render app URL
+const BOT_SERVER = 'https://YOUR-RENDER-APP.onrender.com'; // ← replace with your Render URL
+
+let liveStock = {};
+
+async function fetchStock() {
+  try {
+    const res  = await fetch(BOT_SERVER + '/stock');
+    liveStock  = await res.json();
+  } catch(e) {
+    // If fetch fails just show all as unknown
+    liveStock = {};
+  }
+  renderHomeUcList();
+  renderPackages(); // also refresh buy page stock
+}
+
+function renderHomeUcList(){
+  const list = document.getElementById('homeUcList');
+  if (!list) return;
+  list.innerHTML = '';
+  Object.entries(PACKAGES).forEach(([key, pkg]) => {
+    const stock    = liveStock[key] !== undefined ? liveStock[key] : '?';
+    const hasStock = stock > 0;
+    const unknown  = stock === '?';
+    const div = document.createElement('div');
+    div.style.opacity = hasStock ? '1' : '0.45';
+    div.className = 'service-card';
+    div.onclick = hasStock ? () => { navTo('buy'); selectPackage(key); } : null;
+    div.innerHTML = `
+      <div class="service-icon ${hasStock ? 'si-blue' : 'si-orange'}">🎮</div>
+      <div class="service-info">
+        <h3>${pkg.uc} UC — ${pkg.afn} AFN</h3>
+        <p>${unknown ? '⏳ Checking stock…' : hasStock ? '✅ Available (' + stock + ' in stock)' : '❌ Out of stock'}</p>
+      </div>
+      ${hasStock ? '<div class="chevron">›</div>' : ''}
+    `;
+    list.appendChild(div);
+  });
+}
 
 init();
 </script>
