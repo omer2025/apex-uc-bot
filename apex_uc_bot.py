@@ -1,25 +1,24 @@
-import os, json, logging, hashlib, hmac, asyncio
+import os, json, logging, asyncio
 from aiohttp import web
+import aiohttp as aiohttp_client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ConversationHandler, ContextTypes, filters,
 )
-import aiohttp as aiohttp_client
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 # ── Config ────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
 ADMIN_ID         = int(os.getenv("ADMIN_ID", "0"))
-MINI_APP_URL     = os.getenv("MINI_APP_URL", "https://your-site.com")
+MINI_APP_URL     = os.getenv("MINI_APP_URL", "https://apexdigitalhouse.com/app")
 HESABPAY_API_KEY = os.getenv("HESABPAY_API_KEY", "MjY1NzNmMTgtZDI4YS00YzhjLTk0OWUtZDMwYjQ5MWNlNDU4X18yNDZmYjExMTRjOWQ2MTUxMjgzOA==")
 TELEGRAM_SUPPORT = os.getenv("TELEGRAM_SUPPORT", "@Wajid_gaming_store")
-WEBHOOK_PORT     = int(os.getenv("PORT", "8080"))  # Render sets PORT automatically
+PORT             = int(os.getenv("PORT", "8080"))
 
-# HesabPay API endpoints
-HESABPAY_CREATE_SESSION = "https://api.hesab.com/api/v1/payment/create-session"
-HESABPAY_VERIFY         = "https://api.hesab.com/api/v1/hesab/webhooks/verify-signature"
+HESABPAY_CREATE  = "https://api.hesab.com/api/v1/payment/create-session"
+HESABPAY_VERIFY  = "https://api.hesab.com/api/v1/hesab/webhooks/verify-signature"
 
 if not BOT_TOKEN: raise ValueError("BOT_TOKEN missing")
 if ADMIN_ID == 0: raise ValueError("ADMIN_ID missing")
@@ -33,221 +32,141 @@ PACKAGES = {
     "8100UC": {"uc": 8100, "afn": 5910, "usd": 90.85},
 }
 
-# In-memory storage
-wallets:          dict = {}
-pending_orders:   dict = {}   # session_id → order info
-code_store:       dict = {key: [] for key in PACKAGES}
+wallets:        dict = {}
+pending_orders: dict = {}
+code_store:     dict = {key: [] for key in PACKAGES}
 
-# States
 SELECT_PACKAGE, ENTER_PLAYER_ID, SELECT_PAYMENT, ADMIN_ADD_CODES = range(4)
 
-# Global reference to the bot application (set in main)
-bot_app = None
+bot_app = None  # set in main
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HESABPAY HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
-
-async def create_hesabpay_session(pkg_key: str, player_id: str, user_id: int) -> str | None:
-    """
-    Creates a HesabPay payment session and returns the checkout URL.
-    The customer is redirected to this URL to complete payment.
-    """
+# ── HesabPay ──────────────────────────────────────────────────────────────
+async def create_hesabpay_session(pkg_key, player_id, user_id):
     pkg = PACKAGES[pkg_key]
-    # HesabPay works in USD; convert AFN price to USD
-    amount = pkg["usd"]
-
+    headers = {"Authorization": HESABPAY_API_KEY, "Content-Type": "application/json"}
     payload = {
-        "products": [
-            {
-                "name":     f"PUBG {pkg['uc']} UC — Player {player_id}",
-                "quantity": 1,
-                "price":    amount,
-            }
-        ],
-        # We store order info in metadata so the webhook can find it
-        "metadata": {
-            "user_id":   str(user_id),
-            "pkg_key":   pkg_key,
-            "player_id": player_id,
-        },
+        "products": [{"name": f"PUBG {pkg['uc']} UC - Player {player_id}", "quantity": 1, "price": pkg["usd"]}],
+        "metadata": {"user_id": str(user_id), "pkg_key": pkg_key, "player_id": player_id},
         "currency": "USD",
     }
-
-    headers = {
-        "Authorization": HESABPAY_API_KEY,
-        "Content-Type":  "application/json",
-    }
-
     try:
-        async with aiohttp_client.ClientSession() as session:
-            async with session.post(
-                HESABPAY_CREATE_SESSION,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp_client.ClientTimeout(total=15),
-            ) as resp:
-                data = await resp.json()
-                logging.info(f"HesabPay create-session response: {data}")
-                # HesabPay returns a payment URL — key may be 'url', 'payment_url', or 'session_url'
-                url = data.get("url") or data.get("payment_url") or data.get("session_url")
+        async with aiohttp_client.ClientSession() as s:
+            async with s.post(HESABPAY_CREATE, json=payload, headers=headers, timeout=aiohttp_client.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                logging.info(f"HesabPay create-session: {data}")
+                url        = data.get("url") or data.get("payment_url") or data.get("session_url")
                 session_id = data.get("session_id") or data.get("id")
                 if url and session_id:
-                    # Save pending order so webhook can match it
-                    pending_orders[session_id] = {
-                        "user_id":   user_id,
-                        "pkg_key":   pkg_key,
-                        "player_id": player_id,
-                    }
+                    pending_orders[session_id] = {"user_id": user_id, "pkg_key": pkg_key, "player_id": player_id}
                 return url
     except Exception as e:
         logging.error(f"HesabPay create-session error: {e}")
         return None
 
 
-async def verify_hesabpay_webhook(payload: dict, signature: str) -> bool:
-    """Verify webhook signature with HesabPay API."""
-    headers = {
-        "Authorization": HESABPAY_API_KEY,
-        "Content-Type":  "application/json",
-    }
-    body = {"signature": signature, **payload}
+async def verify_hesabpay_webhook(payload, signature):
+    headers = {"Authorization": HESABPAY_API_KEY, "Content-Type": "application/json"}
     try:
-        async with aiohttp_client.ClientSession() as session:
-            async with session.post(
-                HESABPAY_VERIFY,
-                json=body,
-                headers=headers,
-                timeout=aiohttp_client.ClientTimeout(total=10),
-            ) as resp:
-                data = await resp.json()
-                logging.info(f"HesabPay verify response: {data}")
+        async with aiohttp_client.ClientSession() as s:
+            async with s.post(HESABPAY_VERIFY, json={"signature": signature, **payload}, headers=headers, timeout=aiohttp_client.ClientTimeout(total=10)) as r:
+                data = await r.json()
                 return data.get("valid") is True or data.get("verified") is True
     except Exception as e:
         logging.error(f"HesabPay verify error: {e}")
         return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# WEBHOOK SERVER  (receives payment confirmation from HesabPay)
-# ═══════════════════════════════════════════════════════════════════════════
-
-async def hesabpay_webhook_handler(request: web.Request) -> web.Response:
-    """
-    HesabPay POSTs to this endpoint after payment is completed.
-    We verify the signature, then auto-deliver the UC code.
-    """
+# ── Webhook server ────────────────────────────────────────────────────────
+async def hesabpay_webhook(request):
     global bot_app
-
     try:
         payload   = await request.json()
         signature = request.headers.get("X-Signature") or payload.get("signature", "")
-        logging.info(f"HesabPay webhook received: {payload}")
+        logging.info(f"Webhook received: {payload}")
 
-        # Verify with HesabPay
         valid = await verify_hesabpay_webhook(payload, signature)
         if not valid:
-            logging.warning("HesabPay webhook signature invalid!")
             return web.Response(status=400, text="Invalid signature")
 
-        # Check payment status
-        status     = payload.get("status") or payload.get("payment_status", "")
+        status     = (payload.get("status") or payload.get("payment_status", "")).lower()
         session_id = payload.get("session_id") or payload.get("id", "")
 
-        if status.lower() not in ("paid", "success", "completed"):
-            logging.info(f"Payment not completed, status: {status}")
+        if status not in ("paid", "success", "completed"):
             return web.Response(text="ok")
 
-        # Find the pending order
         order = pending_orders.get(session_id)
-        if not order:
-            # Try metadata fallback
+        if order:
+            user_id, pkg_key, player_id = order["user_id"], order["pkg_key"], order["player_id"]
+        else:
             meta      = payload.get("metadata", {})
             user_id   = int(meta.get("user_id", 0))
             pkg_key   = meta.get("pkg_key", "")
             player_id = meta.get("player_id", "")
-        else:
-            user_id   = order["user_id"]
-            pkg_key   = order["pkg_key"]
-            player_id = order["player_id"]
 
         if not user_id or not pkg_key:
-            logging.error("Could not find order for this webhook")
             return web.Response(status=400, text="Order not found")
 
         pkg = PACKAGES.get(pkg_key)
         if not pkg:
             return web.Response(status=400, text="Invalid package")
 
-        # Check stock
         if not code_store.get(pkg_key):
-            # No code available — notify admin, notify user
-            await bot_app.bot.send_message(
-                user_id,
-                "✅ *Payment received!*\n\n"
-                "⚠️ Unfortunately we are temporarily out of stock for this package.\n"
-                "Our team will deliver your code manually within 30 minutes.\n\n"
-                f"Contact: {TELEGRAM_SUPPORT}",
-                parse_mode="Markdown",
-            )
-            await bot_app.bot.send_message(
-                ADMIN_ID,
-                f"⚠️ *OUT OF STOCK — MANUAL DELIVERY NEEDED*\n\n"
-                f"User: `{user_id}`\n"
-                f"Package: *{pkg['uc']} UC*\n"
-                f"Player ID: `{player_id}`\n"
-                f"Payment: ✅ CONFIRMED by HesabPay",
-                parse_mode="Markdown",
-            )
+            await bot_app.bot.send_message(user_id,
+                "✅ *Payment received!*\n\n⚠️ Temporarily out of stock.\nWe will deliver your code manually within 30 minutes.\n\nContact: " + TELEGRAM_SUPPORT,
+                parse_mode="Markdown")
+            await bot_app.bot.send_message(ADMIN_ID,
+                f"⚠️ *OUT OF STOCK — MANUAL DELIVERY*\n\nUser: `{user_id}`\nPackage: *{pkg['uc']} UC*\nPlayer ID: `{player_id}`\nPayment: ✅ CONFIRMED",
+                parse_mode="Markdown")
             pending_orders.pop(session_id, None)
             return web.Response(text="ok")
 
-        # Pop code and deliver!
         code      = code_store[pkg_key].pop(0)
         remaining = len(code_store[pkg_key])
 
-        # Notify admin
-        await bot_app.bot.send_message(
-            ADMIN_ID,
-            f"🎮 *AUTO-DELIVERED ORDER*\n\n"
-            f"👤 User: `{user_id}`\n"
-            f"Package: *{pkg['uc']} UC*\n"
-            f"Player ID: `{player_id}`\n"
-            f"💰 Payment: ✅ CONFIRMED by HesabPay\n"
-            f"🔑 Code sent: `{code}`\n"
-            f"🗄️ Remaining stock: {remaining}",
-            parse_mode="Markdown",
-        )
-
-        # Deliver code to customer
-        await bot_app.bot.send_message(
-            user_id,
+        await bot_app.bot.send_message(ADMIN_ID,
+            f"🎮 *AUTO-DELIVERED*\n\nUser: `{user_id}`\nPackage: *{pkg['uc']} UC*\nPlayer ID: `{player_id}`\nCode: `{code}`\nRemaining stock: {remaining}",
+            parse_mode="Markdown")
+        await bot_app.bot.send_message(user_id,
             f"✅ *Payment Confirmed! Here is your UC Code:*\n\n"
             f"🎮 Package: *{pkg['uc']} UC*\n"
             f"🎯 Player ID: `{player_id}`\n\n"
             f"🔑 *Your Code:*\n`{code}`\n\n"
-            "Thank you for shopping at Apex Digital House! 🇦🇫\n"
-            "New order? /start",
-            parse_mode="Markdown",
-        )
+            "Thank you for shopping at Apex Digital House! 🇦🇫\nNew order? /start",
+            parse_mode="Markdown")
 
         pending_orders.pop(session_id, None)
         return web.Response(text="ok")
 
     except Exception as e:
-        logging.error(f"Webhook handler error: {e}")
-        return web.Response(status=500, text="Server error")
+        logging.error(f"Webhook error: {e}")
+        return web.Response(status=500, text="error")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# BOT HANDLERS
-# ═══════════════════════════════════════════════════════════════════════════
+async def stock_api(request):
+    data = {key: len(codes) for key, codes in code_store.items()}
+    return web.Response(
+        text=json.dumps(data),
+        content_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
+
+async def run_server():
+    app = web.Application()
+    app.router.add_post("/hesabpay-webhook", hesabpay_webhook)
+    app.router.add_get("/stock",             stock_api)
+    app.router.add_get("/",                  lambda r: web.Response(text="Apex UC Bot running ✅"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    logging.info(f"Server running on port {PORT}")
+
+
+# ── Bot handlers ──────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     is_admin = update.message.from_user.id == ADMIN_ID
-
     kb = [
         [InlineKeyboardButton("⚡ Quick Buy — 60 UC (60 AFN)", callback_data="pkg_60UC")],
         [InlineKeyboardButton("🎮 All Packages",               callback_data="show_packages")],
@@ -255,13 +174,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     if is_admin:
         kb.append([InlineKeyboardButton("🗄️ Manage Codes", callback_data="admin_codes")])
-
     await update.message.reply_text(
         "🏪 *Welcome to Apex Digital House!*\n\n"
         "Afghanistan's #1 PUBG UC Store 🇦🇫\n\n"
-        "✅ Fast delivery\n"
-        "✅ Best prices\n"
-        "✅ 24/7 support\n\n"
+        "✅ Fast delivery\n✅ Best prices\n✅ 24/7 support\n\n"
         "Choose an option below:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
@@ -339,12 +255,9 @@ async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not player_id.isdigit() or len(player_id) < 5:
         await update.message.reply_text("❌ Please enter a valid numeric Player ID (min 5 digits).")
         return ENTER_PLAYER_ID
-
     context.user_data["player_id"] = player_id
-    pkg_key = context.user_data["package"]
-    pkg     = PACKAGES[pkg_key]
+    pkg     = PACKAGES[context.user_data["package"]]
     balance = wallets.get(update.message.from_user.id, 0)
-
     kb = [
         [InlineKeyboardButton("💳 Pay via HesabPay (Auto)", callback_data="pay_hesabpay")],
         [InlineKeyboardButton("💰 Pay From Wallet",          callback_data="pay_wallet")],
@@ -372,37 +285,23 @@ async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player_id = context.user_data["player_id"]
     user_id   = query.from_user.id
 
-    # ── Wallet payment ────────────────────────────────────────────────────
     if payment == "wallet":
         balance = wallets.get(user_id, 0)
         if balance < pkg["afn"]:
             await query.edit_message_text(
-                f"❌ *Not enough wallet balance.*\n\n"
-                f"Your balance: *{balance} AFN*\n"
-                f"Required: *{pkg['afn']} AFN*",
+                f"❌ *Not enough balance.*\n\nYour balance: *{balance} AFN*\nRequired: *{pkg['afn']} AFN*",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Back", callback_data="back_start")
-                ]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]),
             )
             return SELECT_PACKAGE
         if not code_store.get(pkg_key):
             await query.edit_message_text("❌ Out of stock. Contact support.")
             return ConversationHandler.END
-
         wallets[user_id] = balance - pkg["afn"]
         code = code_store[pkg_key].pop(0)
-
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🎮 *WALLET ORDER AUTO-DELIVERED*\n\n"
-            f"👤 `{user_id}`\n"
-            f"Package: *{pkg['uc']} UC*\n"
-            f"Player ID: `{player_id}`\n"
-            f"Paid: *{pkg['afn']} AFN* (wallet)\n"
-            f"Code sent: `{code}`",
-            parse_mode="Markdown",
-        )
+        await context.bot.send_message(ADMIN_ID,
+            f"🎮 *WALLET ORDER AUTO-DELIVERED*\n\nUser: `{user_id}`\nPackage: *{pkg['uc']} UC*\nPlayer ID: `{player_id}`\nCode: `{code}`",
+            parse_mode="Markdown")
         await query.edit_message_text(
             f"✅ *Payment Confirmed & Code Delivered!*\n\n"
             f"🎮 Package: *{pkg['uc']} UC*\n"
@@ -414,37 +313,27 @@ async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return ConversationHandler.END
 
-    # ── HesabPay — create session and send link ───────────────────────────
-    await query.edit_message_text(
-        "⏳ Creating your payment link…",
-    )
-
+    # HesabPay
+    await query.edit_message_text("⏳ Creating your payment link…")
     pay_url = await create_hesabpay_session(pkg_key, player_id, user_id)
-
     if not pay_url:
-        await query.edit_message_text(
-            "❌ Could not create payment link right now.\n\n"
-            f"Please contact support: {TELEGRAM_SUPPORT}",
-        )
+        await query.edit_message_text(f"❌ Could not create payment link.\nContact: {TELEGRAM_SUPPORT}")
         return ConversationHandler.END
-
     await query.edit_message_text(
         f"💳 *Your HesabPay Payment Link is Ready!*\n\n"
         f"🎮 Package: *{pkg['uc']} UC*\n"
         f"💰 Amount: *${pkg['usd']}*\n"
         f"🎯 Player ID: `{player_id}`\n\n"
-        "👇 Tap the button below to pay.\n"
-        "Once your payment is confirmed, your UC code will be sent here *automatically*. ✅",
+        "Tap the button below to pay.\n"
+        "Your UC code will be sent here *automatically* once payment is confirmed. ✅",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("💳 Pay Now via HesabPay", url=pay_url)
-        ]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💳 Pay Now via HesabPay", url=pay_url)]]),
     )
     context.user_data.clear()
     return ConversationHandler.END
 
 
-# ── Admin: code management ────────────────────────────────────────────────
+# ── Admin code management ─────────────────────────────────────────────────
 async def admin_codes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -456,14 +345,8 @@ async def admin_codes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count  = len(code_store.get(key, []))
         status = "✅" if count > 0 else "❌ EMPTY"
         lines.append(f"{status} *{pkg['uc']} UC* — {count} code(s)")
-        kb.append([InlineKeyboardButton(
-            f"➕ Add for {pkg['uc']} UC", callback_data=f"admin_addcodes_{key}"
-        )])
-    await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
+        kb.append([InlineKeyboardButton(f"➕ Add for {pkg['uc']} UC", callback_data=f"admin_addcodes_{key}")])
+    await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def admin_start_add_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -475,12 +358,8 @@ async def admin_start_add_codes(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["adding_codes_for"] = pkg_key
     pkg = PACKAGES[pkg_key]
     await query.edit_message_text(
-        f"➕ *Adding codes for {pkg['uc']} UC*\n\n"
-        "Send one code per line:\n\n"
-        "`CODE-ABCD-1234\nCODE-EFGH-5678`\n\n"
-        "Type /cancel to stop.",
-        parse_mode="Markdown",
-    )
+        f"➕ *Adding codes for {pkg['uc']} UC*\n\nSend one code per line.\nType /cancel to stop.",
+        parse_mode="Markdown")
     return ADMIN_ADD_CODES
 
 
@@ -498,15 +377,13 @@ async def admin_receive_codes(update: Update, context: ContextTypes.DEFAULT_TYPE
     code_store.setdefault(pkg_key, []).extend(codes)
     pkg = PACKAGES[pkg_key]
     await update.message.reply_text(
-        f"✅ *{len(codes)} code(s) added* for *{pkg['uc']} UC*!\n"
-        f"Total in stock: *{len(code_store[pkg_key])}*",
-        parse_mode="Markdown",
-    )
+        f"✅ *{len(codes)} code(s) added* for *{pkg['uc']} UC*!\nTotal: *{len(code_store[pkg_key])}*",
+        parse_mode="Markdown")
     context.user_data.clear()
     return ConversationHandler.END
 
 
-async def admin_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
         return
     lines = ["🗄️ *UC Code Inventory*\n"]
@@ -523,35 +400,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN — run bot + webhook server together
-# ═══════════════════════════════════════════════════════════════════════════
-
-async def stock_api_handler(request: web.Request) -> web.Response:
-    """Returns live stock counts as JSON for the Mini App."""
-    data = {key: len(codes) for key, codes in code_store.items()}
-    return web.Response(
-        text=json.dumps(data),
-        content_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*"},  # allow Mini App to fetch it
-    )
-
-
-async def run_webhook_server():
-    app = web.Application()
-    app.router.add_post("/hesabpay-webhook", hesabpay_webhook_handler)
-    app.router.add_get("/stock",             stock_api_handler)
-    app.router.add_get("/",                  lambda r: web.Response(text="Apex UC Bot running"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
-    await site.start()
-    logging.info(f"Webhook server running on port {WEBHOOK_PORT}")
-
-
-if __name__ == "__main__":
-    import asyncio
-    from telegram.ext import Application
+# ── Main ──────────────────────────────────────────────────────────────────
+async def main():
+    global bot_app
 
     application = Application.builder().token(BOT_TOKEN).build()
     bot_app     = application
@@ -570,7 +421,7 @@ if __name__ == "__main__":
             ],
             ENTER_PLAYER_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_player_id),
-                CallbackQueryHandler(show_packages,  pattern="^show_packages$"),
+                CallbackQueryHandler(show_packages, pattern="^show_packages$"),
             ],
             SELECT_PAYMENT: [
                 CallbackQueryHandler(select_payment, pattern="^pay_"),
@@ -589,17 +440,18 @@ if __name__ == "__main__":
 
     application.add_handler(buy_conv)
     application.add_handler(code_conv)
-    application.add_handler(CommandHandler("stock",        admin_stock_command))
+    application.add_handler(CommandHandler("stock", stock_command))
     application.add_handler(CallbackQueryHandler(admin_codes_menu, pattern="^admin_codes$"))
 
-    async def main():
-        await run_webhook_server()
-        async with application:
-            await application.initialize()
-            await application.start()
-            await application.updater.start_polling()
-            logging.info("🤖 Apex UC Bot running with HesabPay auto-payment…")
-            # Run forever
-            await asyncio.Event().wait()
+    # Start webhook server and bot together
+    await run_server()
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        logging.info("🤖 Apex UC Bot running with HesabPay auto-payment…")
+        await asyncio.Event().wait()
 
+
+if __name__ == "__main__":
     asyncio.run(main())
