@@ -527,9 +527,20 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN — run bot + webhook server together
 # ═══════════════════════════════════════════════════════════════════════════
 
+async def stock_api_handler(request: web.Request) -> web.Response:
+    """Returns live stock counts as JSON for the Mini App."""
+    data = {key: len(codes) for key, codes in code_store.items()}
+    return web.Response(
+        text=json.dumps(data),
+        content_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},  # allow Mini App to fetch it
+    )
+
+
 async def run_webhook_server():
     app = web.Application()
     app.router.add_post("/hesabpay-webhook", hesabpay_webhook_handler)
+    app.router.add_get("/stock",             stock_api_handler)
     app.router.add_get("/",                  lambda r: web.Response(text="Apex UC Bot running"))
     runner = web.AppRunner(app)
     await runner.setup()
