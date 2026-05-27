@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>Apex Digital House</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg:#0d0d1a;--card:#13132a;--card2:#1a1a35;--accent:#7c5cfc;--accent2:#a78bfa;
+  --gold:#f5c842;--green:#22d07a;--red:#ff5e5e;--text:#f0eeff;--muted:#8888aa;
+  --border:rgba(124,92,252,0.18);--radius:18px;--shadow:0 8px 32px rgba(0,0,0,0.45);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;overflow-x:hidden}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:18px 20px 10px;position:sticky;top:0;z-index:100;background:linear-gradient(180deg,var(--bg) 80%,transparent)}
+.topbar-logo{font-family:'Syne',sans-serif;font-weight:800;font-size:17px;color:var(--text)}
+.topbar-logo span{color:var(--accent2)}
+.topbar-avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;border:2px solid var(--border)}
+.page{display:none;padding:0 0 90px;animation:fadeUp .3s ease}
+.page.active{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.wallet-card{margin:10px 16px 20px;border-radius:24px;background:linear-gradient(135deg,#4a2fcb 0%,#7c5cfc 55%,#a78bfa 100%);padding:28px 24px 22px;position:relative;overflow:hidden;box-shadow:0 12px 40px rgba(124,92,252,0.35)}
+.wallet-card::before{content:'';position:absolute;top:-40px;right:-40px;width:160px;height:160px;background:rgba(255,255,255,0.08);border-radius:50%}
+.wallet-card::after{content:'';position:absolute;bottom:-60px;right:20px;width:200px;height:200px;background:rgba(255,255,255,0.05);border-radius:50%}
+.wc-label{font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;opacity:.75;margin-bottom:6px}
+.wc-balance{font-family:'Syne',sans-serif;font-size:38px;font-weight:800;line-height:1;margin-bottom:4px}
+.wc-currency{font-size:14px;opacity:.7;margin-bottom:8px}
+.wc-name{font-size:13px;font-weight:600;opacity:.85;margin-bottom:18px}
+.wc-actions{display:flex;gap:10px;position:relative;z-index:1}
+.wc-btn{flex:1;background:rgba(255,255,255,0.18);border:1.5px solid rgba(255,255,255,0.25);color:#fff;border-radius:12px;padding:10px 0;font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background .2s;backdrop-filter:blur(4px)}
+.wc-btn:active{background:rgba(255,255,255,0.28)}
+.section-label{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);padding:0 20px;margin-bottom:10px}
+.card-list{padding:0 16px;display:flex;flex-direction:column;gap:10px;margin-bottom:24px}
+.service-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:background .18s,transform .15s}
+.service-card:active{background:var(--card2);transform:scale(0.985)}
+.service-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.si-purple{background:linear-gradient(135deg,#6d28d9,#8b5cf6)}
+.si-blue{background:linear-gradient(135deg,#1d4ed8,#3b82f6)}
+.si-green{background:linear-gradient(135deg,#065f46,#10b981)}
+.si-orange{background:linear-gradient(135deg,#92400e,#f59e0b)}
+.service-info{flex:1}
+.service-info h3{font-size:14px;font-weight:600;margin-bottom:2px}
+.service-info p{font-size:12px;color:var(--muted)}
+.chevron{color:var(--accent2);font-size:16px;opacity:.7}
+.page-title{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;padding:16px 20px 4px}
+.page-sub{font-size:13px;color:var(--muted);padding:0 20px 16px}
+.tabs{display:flex;gap:8px;padding:0 16px 16px}
+.tab{flex:1;padding:10px;border-radius:12px;border:1.5px solid var(--border);background:var(--card);color:var(--muted);font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .2s;text-align:center}
+.tab.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 4px 16px rgba(124,92,252,0.4)}
+.pkg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px}
+.pkg-card{background:var(--card);border:1.5px solid var(--border);border-radius:16px;padding:16px 14px;cursor:pointer;transition:all .2s}
+.pkg-card:active{transform:scale(0.96)}
+.pkg-card.selected{border-color:var(--accent);background:rgba(124,92,252,0.12);box-shadow:0 0 0 1px var(--accent)}
+.pkg-uc{font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--accent2);margin-bottom:2px}
+.pkg-label{font-size:11px;color:var(--muted);margin-bottom:10px}
+.pkg-price{font-size:15px;font-weight:700;color:var(--text)}
+.pkg-stock{font-size:10px;margin-top:4px}
+.in-stock{color:var(--green)}
+.out-stock{color:var(--red)}
+.input-group{padding:16px 16px 0}
+.input-group label{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.5px;display:block;margin-bottom:8px}
+.input-group input{width:100%;background:var(--card);border:1.5px solid var(--border);border-radius:12px;color:var(--text);font-size:15px;font-family:'DM Sans',sans-serif;padding:13px 16px;outline:none;transition:border-color .2s}
+.input-group input:focus{border-color:var(--accent)}
+.input-group input::placeholder{color:var(--muted)}
+.pay-methods{display:flex;flex-direction:column;gap:10px;padding:16px 16px 0}
+.pay-method{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all .2s}
+.pay-method:active{background:var(--card2)}
+.pay-method.selected{border-color:var(--accent);background:rgba(124,92,252,0.1)}
+.pay-icon{font-size:22px}
+.pay-info h4{font-size:14px;font-weight:600}
+.pay-info p{font-size:11px;color:var(--muted)}
+.pay-check{margin-left:auto;color:var(--accent);font-size:18px;opacity:0}
+.pay-method.selected .pay-check{opacity:1}
+.btn-primary{display:block;width:calc(100% - 32px);margin:20px 16px 0;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;border-radius:14px;padding:16px;font-size:15px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;box-shadow:0 6px 24px rgba(124,92,252,0.4);transition:opacity .2s,transform .15s}
+.btn-primary:active{opacity:.85;transform:scale(0.98)}
+.btn-primary:disabled{opacity:.4;pointer-events:none}
+.sheet-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;backdrop-filter:blur(3px)}
+.sheet-overlay.open{display:flex;align-items:flex-end}
+.sheet{background:var(--card);border-radius:28px 28px 0 0;padding:24px 20px 36px;width:100%;animation:slideUp .3s ease;border-top:1px solid var(--border)}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.sheet-handle{width:40px;height:4px;background:var(--border);border-radius:2px;margin:0 auto 20px}
+.sheet h3{font-family:'Syne',sans-serif;font-size:18px;font-weight:800;margin-bottom:16px}
+.sheet-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.sheet-row:last-of-type{border-bottom:none}
+.sheet-row span:first-child{color:var(--muted);font-size:13px}
+.sheet-row span:last-child{font-size:14px;font-weight:600}
+.sheet-row .highlight{color:var(--accent2)}
+.account-header{display:flex;flex-direction:column;align-items:center;padding:20px 0 24px}
+.account-avatar{width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#fff;margin-bottom:12px;border:3px solid rgba(167,139,250,0.3)}
+.account-name{font-family:'Syne',sans-serif;font-size:18px;font-weight:800}
+.account-id{font-size:12px;color:var(--muted);margin-top:4px}
+.badge{display:inline-block;padding:3px 10px;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:20px;font-size:11px;font-weight:700;margin-top:8px;color:#fff}
+.stats-row{display:flex;gap:10px;padding:0 16px 20px}
+.stat-card{flex:1;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 12px;text-align:center}
+.stat-card .sv{font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--accent2)}
+.stat-card .sl{font-size:11px;color:var(--muted);margin-top:2px}
+.history-item{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px}
+.hist-icon{width:38px;height:38px;border-radius:10px;background:rgba(124,92,252,0.15);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.hist-info{flex:1}
+.hist-info h4{font-size:13px;font-weight:600}
+.hist-info p{font-size:11px;color:var(--muted);margin-top:2px}
+.hist-amount{font-size:14px;font-weight:700;color:var(--green)}
+.support-hero{text-align:center;padding:24px 20px 20px}
+.support-hero .emoji{font-size:48px;margin-bottom:12px}
+.support-hero h2{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;margin-bottom:6px}
+.support-hero p{font-size:13px;color:var(--muted);line-height:1.6}
+.contact-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;display:flex;align-items:center;gap:14px;text-decoration:none;color:var(--text);cursor:pointer;transition:background .18s}
+.contact-card:active{background:var(--card2)}
+.contact-icon{font-size:26px}
+.contact-info h4{font-size:14px;font-weight:600}
+.contact-info p{font-size:12px;color:var(--muted);margin-top:2px}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:rgba(13,13,26,0.95);border-top:1px solid var(--border);display:flex;padding:10px 0 max(10px,env(safe-area-inset-bottom));backdrop-filter:blur(12px);z-index:150}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:4px 0;transition:color .2s;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.3px}
+.nav-item .nav-icon{font-size:22px;transition:transform .2s}
+.nav-item.active{color:var(--accent2)}
+.nav-item.active .nav-icon{transform:translateY(-2px)}
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--card2);border:1px solid var(--border);color:var(--text);padding:10px 20px;border-radius:30px;font-size:13px;font-weight:500;opacity:0;transition:all .3s;z-index:999;white-space:nowrap;box-shadow:var(--shadow)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.success{border-color:var(--green);color:var(--green)}
+.toast.error{border-color:var(--red);color:var(--red)}
+.amount-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:0 0 16px}
+.amount-btn{background:var(--card2);border:1.5px solid var(--border);border-radius:10px;padding:10px 4px;color:var(--text);font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;text-align:center;transition:all .2s}
+.amount-btn:active,.amount-btn.sel{background:rgba(124,92,252,0.18);border-color:var(--accent);color:var(--accent2)}
+.divider{height:1px;background:var(--border);margin:4px 0 16px}
+.upload-area{border:2px dashed var(--border);border-radius:14px;padding:24px;text-align:center;cursor:pointer;transition:border-color .2s;margin-bottom:4px}
+.upload-area:active,.upload-area.has-file{border-color:var(--accent)}
+.upload-area .upload-icon{font-size:32px;margin-bottom:8px}
+.upload-area p{font-size:13px;color:var(--muted)}
+.upload-area .upload-name{font-size:12px;color:var(--green);margin-top:6px}
+#fileInput,#depFileInput{display:none}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo">Apex <span>Digital</span></div>
+  <div class="topbar-avatar" id="avatarInitial">A</div>
+</div>
+
+<!-- HOME -->
+<div class="page active" id="page-home">
+  <div class="wallet-card">
+    <div class="wc-label">Wallet Balance</div>
+    <div class="wc-balance" id="homeBalance">0</div>
+    <div class="wc-currency">AFN</div>
+    <div class="wc-name" id="homeName">@username</div>
+    <div class="wc-actions">
+      <button class="wc-btn" onclick="openAddBalance()">➕ Add Balance</button>
+      <button class="wc-btn" onclick="navTo('buy')">🎮 Buy UC</button>
+    </div>
+  </div>
+  <div class="section-label">SERVICES</div>
+  <div class="card-list">
+    <div class="service-card" onclick="navTo('buy')">
+      <div class="service-icon si-blue">🎮</div>
+      <div class="service-info"><h3>Game Top-Ups</h3><p>Buy PUBG Mobile UC instantly</p></div>
+      <div class="chevron">›</div>
+    </div>
+    <div class="service-card" onclick="openAddBalance()">
+      <div class="service-icon si-purple">💳</div>
+      <div class="service-info"><h3>Add Balance</h3><p>Top up via HesabPay or USDT</p></div>
+      <div class="chevron">›</div>
+    </div>
+  </div>
+  <div class="section-label">ACCOUNT</div>
+  <div class="card-list">
+    <div class="service-card" onclick="navTo('account')">
+      <div class="service-icon si-green">📋</div>
+      <div class="service-info"><h3>Purchase History</h3><p>View your past orders</p></div>
+      <div class="chevron">›</div>
+    </div>
+    <div class="service-card" onclick="navTo('account')">
+      <div class="service-icon si-orange">💸</div>
+      <div class="service-info"><h3>Transactions</h3><p>Check your payment activity</p></div>
+      <div class="chevron">›</div>
+    </div>
+  </div>
+  <div class="section-label">SUPPORT</div>
+  <div class="card-list">
+    <div class="service-card" onclick="navTo('support')">
+      <div class="service-icon si-blue">💬</div>
+      <div class="service-info"><h3>Support DM</h3><p>Chat with our team</p></div>
+      <div class="chevron">›</div>
+    </div>
+  </div>
+</div>
+
+<!-- BUY UC -->
+<div class="page" id="page-buy">
+  <div class="page-title">Buy PUBG UC</div>
+  <div class="page-sub">Choose your package and pay instantly</div>
+  <div class="tabs">
+    <button class="tab active" id="tab-afn" onclick="switchCurrency('afn')">🇦🇫 AFN</button>
+    <button class="tab" id="tab-usd" onclick="switchCurrency('usd')">💵 USD</button>
+  </div>
+  <div class="pkg-grid" id="pkgGrid"></div>
+  <div class="input-group" style="margin-top:20px">
+    <label>PUBG MOBILE PLAYER ID</label>
+    <input type="number" id="playerIdInput" placeholder="Enter your Player ID…" inputmode="numeric"/>
+  </div>
+  <div class="pay-methods" id="payMethods">
+    <div class="pay-method" id="pm-wallet" onclick="selectPayment('wallet')">
+      <span class="pay-icon">💰</span>
+      <div class="pay-info"><h4>Pay From Wallet</h4><p id="walletBalLabel">Balance: 0 AFN</p></div>
+      <span class="pay-check">✓</span>
+    </div>
+    <div class="pay-method" id="pm-hesabpay" onclick="selectPayment('hesabpay')">
+      <span class="pay-icon">📲</span>
+      <div class="pay-info"><h4>HesabPay</h4><p>+93 789 077 537</p></div>
+      <span class="pay-check">✓</span>
+    </div>
+    <div class="pay-method" id="pm-usdt" onclick="selectPayment('usdt')">
+      <span class="pay-icon">💎</span>
+      <div class="pay-info"><h4>USDT (TRC20)</h4><p>Crypto payment</p></div>
+      <span class="pay-check">✓</span>
+    </div>
+  </div>
+  <button class="btn-primary" onclick="openOrderSheet()">Continue →</button>
+</div>
+
+<!-- ACCOUNT -->
+<div class="page" id="page-account">
+  <div class="account-header">
+    <div class="account-avatar" id="acctAvatar">A</div>
+    <div class="account-name" id="acctName">Loading…</div>
+    <div class="account-id" id="acctId">Telegram ID: —</div>
+    <div class="badge">⭐ Premium Member</div>
+  </div>
+  <div class="stats-row">
+    <div class="stat-card"><div class="sv" id="statOrders">0</div><div class="sl">Orders</div></div>
+    <div class="stat-card"><div class="sv" id="statBalance">0</div><div class="sl">AFN Balance</div></div>
+    <div class="stat-card"><div class="sv">⚡</div><div class="sl">Fast Delivery</div></div>
+  </div>
+  <div class="section-label">RECENT ACTIVITY</div>
+  <div class="card-list" id="historyList">
+    <div style="text-align:center;color:var(--muted);padding:30px 0;font-size:13px">No orders yet</div>
+  </div>
+</div>
+
+<!-- SUPPORT -->
+<div class="page" id="page-support">
+  <div class="support-hero">
+    <div class="emoji">🛟</div>
+    <h2>Support & Help</h2>
+    <p>Having issues? We're here 24/7.<br/>We respond within 30 minutes.</p>
+  </div>
+  <div class="card-list">
+    <a class="contact-card" href="https://t.me/Wajid_gaming_store" target="_blank">
+      <span class="contact-icon">✈️</span>
+      <div class="contact-info"><h4>Telegram Support</h4><p>@Wajid_gaming_store</p></div>
+    </a>
+    <a class="contact-card" href="https://wa.me/93789077537" target="_blank">
+      <span class="contact-icon">💬</span>
+      <div class="contact-info"><h4>WhatsApp</h4><p>+93 789 077 537</p></div>
+    </a>
+  </div>
+  <div class="section-label" style="margin-top:8px">COMMON ISSUES</div>
+  <div class="card-list">
+    <div class="service-card"><div class="service-icon si-orange">⚠️</div><div class="service-info"><h3>Wrong Player ID</h3><p>Contact us immediately before UC is sent</p></div></div>
+    <div class="service-card"><div class="service-icon si-blue">⏳</div><div class="service-info"><h3>UC Not Delivered</h3><p>Usually takes up to 30 minutes</p></div></div>
+    <div class="service-card"><div class="service-icon si-purple">💳</div><div class="service-info"><h3>Payment Issue</h3><p>Send us screenshot on WhatsApp</p></div></div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<nav class="bottom-nav">
+  <div class="nav-item active" id="nav-home" onclick="navTo('home')"><span class="nav-icon">🏠</span>Home</div>
+  <div class="nav-item" id="nav-buy" onclick="navTo('buy')"><span class="nav-icon">🎮</span>Buy UC</div>
+  <div class="nav-item" id="nav-account" onclick="navTo('account')"><span class="nav-icon">👤</span>Account</div>
+  <div class="nav-item" id="nav-support" onclick="navTo('support')"><span class="nav-icon">💬</span>Support</div>
+</nav>
+
+<!-- ORDER SHEET -->
+<div class="sheet-overlay" id="orderSheet" onclick="closeSheet('orderSheet')">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <h3>Order Summary</h3>
+    <div class="sheet-row"><span>Package</span><span id="sum-pkg" class="highlight">—</span></div>
+    <div class="sheet-row"><span>Player ID</span><span id="sum-pid">—</span></div>
+    <div class="sheet-row"><span>Payment</span><span id="sum-pay">—</span></div>
+    <div class="sheet-row"><span>Total</span><span id="sum-price" class="highlight">—</span></div>
+    <div id="sum-wallet-row" class="sheet-row" style="display:none"><span>Balance after</span><span id="sum-wallet-after">—</span></div>
+    <div id="screenshotSection" style="margin-top:16px">
+      <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-icon">📸</div>
+        <p>Tap to upload payment screenshot</p>
+        <div class="upload-name" id="uploadName"></div>
+      </div>
+      <input type="file" id="fileInput" accept="image/*" onchange="handleFileUpload(this)"/>
+    </div>
+    <button class="btn-primary" style="margin-top:16px" onclick="submitOrder()">Confirm Order</button>
+  </div>
+</div>
+
+<!-- ADD BALANCE SHEET -->
+<div class="sheet-overlay" id="balanceSheet" onclick="closeSheet('balanceSheet')">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <h3>➕ Add Balance</h3>
+    <div class="amount-grid" id="amountGrid"></div>
+    <div class="input-group" style="padding:0 0 16px">
+      <label>OR ENTER CUSTOM AMOUNT (AFN)</label>
+      <input type="number" id="customAmount" placeholder="e.g. 750" inputmode="numeric"/>
+    </div>
+    <div class="divider"></div>
+    <div class="pay-methods" style="padding:0 0 16px">
+      <div class="pay-method" onclick="selectDepositMethod('hesabpay')" id="dep-hesabpay">
+        <span class="pay-icon">📲</span>
+        <div class="pay-info"><h4>HesabPay</h4><p>+93 789 077 537</p></div>
+        <span class="pay-check">✓</span>
+      </div>
+      <div class="pay-method" onclick="selectDepositMethod('usdt')" id="dep-usdt">
+        <span class="pay-icon">💎</span>
+        <div class="pay-info"><h4>USDT (TRC20)</h4><p>Crypto</p></div>
+        <span class="pay-check">✓</span>
+      </div>
+    </div>
+    <div class="upload-area" onclick="document.getElementById('depFileInput').click()">
+      <div class="upload-icon">📸</div>
+      <p>Upload payment screenshot</p>
+      <div class="upload-name" id="depUploadName"></div>
+    </div>
+    <input type="file" id="depFileInput" accept="image/*" onchange="handleDepFileUpload(this)"/>
+    <button class="btn-primary" style="margin-top:16px" onclick="submitDeposit()">Submit Deposit</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+let state = {wallet:0,currency:'afn',selPkg:null,selPayment:null,selDepMethod:null,uploadedFile:null,depFile:null,orderCount:0,history:[],userId:null,userName:null};
+const PACKAGES={'60UC':{uc:60,afn:60,usd:0.95},'325UC':{uc:325,afn:300,usd:4.50},'660UC':{uc:660,afn:590,usd:9.10},'1800UC':{uc:1800,afn:1470,usd:22.65},'3850UC':{uc:3850,afn:2960,usd:45.50},'8100UC':{uc:8100,afn:5910,usd:90.85}};
+const PRESETS=[100,200,300,500,1000,2000];
+
+function init(){
+  if(tg){tg.expand();tg.setHeaderColor('#0d0d1a');tg.setBackgroundColor('#0d0d1a');const u=tg.initDataUnsafe?.user;if(u){state.userId=u.id;state.userName=u.username||u.first_name||'User';}}
+  const name=state.userName||'User';const initial=name[0].toUpperCase();
+  document.getElementById('avatarInitial').textContent=initial;
+  document.getElementById('homeName').textContent='@'+name;
+  document.getElementById('acctAvatar').textContent=initial;
+  document.getElementById('acctName').textContent=name;
+  document.getElementById('acctId').textContent='Telegram ID: '+(state.userId||'—');
+  renderPackages();renderPresets();updateBalanceDisplay();
+}
+
+function navTo(page){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+  document.getElementById('nav-'+page).classList.add('active');
+  if(page==='account')refreshAccount();
+}
+
+function updateBalanceDisplay(){
+  document.getElementById('homeBalance').textContent=state.wallet.toLocaleString();
+  document.getElementById('walletBalLabel').textContent='Balance: '+state.wallet+' AFN';
+  document.getElementById('statBalance').textContent=state.wallet;
+}
+
+function renderPackages(){
+  const grid=document.getElementById('pkgGrid');grid.innerHTML='';
+  Object.entries(PACKAGES).forEach(([key,pkg])=>{
+    const price=state.currency==='afn'?pkg.afn+' AFN':'$'+pkg.usd;
+    const div=document.createElement('div');
+    div.className='pkg-card'+(state.selPkg===key?' selected':'');
+    div.onclick=()=>selectPackage(key);
+    div.innerHTML=`<div class="pkg-uc">${pkg.uc}</div><div class="pkg-label">UC</div><div class="pkg-price">${price}</div><div class="pkg-stock in-stock">✅ In Stock</div>`;
+    grid.appendChild(div);
+  });
+}
+
+function selectPackage(key){state.selPkg=key;renderPackages();}
+
+function switchCurrency(cur){
+  state.currency=cur;
+  document.getElementById('tab-afn').classList.toggle('active',cur==='afn');
+  document.getElementById('tab-usd').classList.toggle('active',cur==='usd');
+  document.getElementById('pm-wallet').style.display=cur==='afn'?'':'none';
+  if(cur==='usd'&&state.selPayment==='wallet')state.selPayment=null;
+  renderPackages();
+}
+
+function selectPayment(method){
+  state.selPayment=method;
+  ['wallet','hesabpay','usdt'].forEach(m=>{const el=document.getElementById('pm-'+m);if(el)el.classList.toggle('selected',m===method);});
+}
+
+function openOrderSheet(){
+  const pid=document.getElementById('playerIdInput').value.trim();
+  if(!state.selPkg){showToast('Please select a package','error');return;}
+  if(!pid||pid.length<5||isNaN(pid)){showToast('Enter a valid Player ID','error');return;}
+  if(!state.selPayment){showToast('Choose a payment method','error');return;}
+  const pkg=PACKAGES[state.selPkg];
+  const price=state.currency==='afn'?pkg.afn+' AFN':'$'+pkg.usd;
+  const payLabels={wallet:'💰 Wallet',hesabpay:'📲 HesabPay',usdt:'💎 USDT'};
+  document.getElementById('sum-pkg').textContent=pkg.uc+' UC';
+  document.getElementById('sum-pid').textContent=pid;
+  document.getElementById('sum-pay').textContent=payLabels[state.selPayment];
+  document.getElementById('sum-price').textContent=price;
+  const walletRow=document.getElementById('sum-wallet-row');
+  const screenshotSec=document.getElementById('screenshotSection');
+  if(state.selPayment==='wallet'){const after=state.wallet-pkg.afn;document.getElementById('sum-wallet-after').textContent=after+' AFN';walletRow.style.display='';screenshotSec.style.display='none';}
+  else{walletRow.style.display='none';screenshotSec.style.display='';}
+  document.getElementById('orderSheet').classList.add('open');
+}
+
+function handleFileUpload(input){if(input.files[0]){state.uploadedFile=input.files[0];document.getElementById('uploadName').textContent='✅ '+input.files[0].name;}}
+
+function submitOrder(){
+  const pid=document.getElementById('playerIdInput').value.trim();
+  const pkg=PACKAGES[state.selPkg];
+  if(state.selPayment==='wallet'){
+    if(state.wallet<pkg.afn){showToast('Not enough wallet balance','error');return;}
+    state.wallet-=pkg.afn;updateBalanceDisplay();
+    addHistory('🎮',pkg.uc+' UC','Wallet payment','-'+pkg.afn+' AFN');
+    closeSheet('orderSheet');showToast('✅ Order placed! Code coming via bot','success');
+    if(tg)tg.sendData(JSON.stringify({type:'order',pkg:state.selPkg,pid,payment:'wallet',amount:pkg.afn}));
+  } else {
+    if(!state.uploadedFile){showToast('Please upload a screenshot','error');return;}
+    addHistory('🎮',pkg.uc+' UC','Pending confirmation','');
+    closeSheet('orderSheet');showToast('✅ Order submitted! Awaiting confirmation','success');
+    if(tg)tg.sendData(JSON.stringify({type:'order',pkg:state.selPkg,pid,payment:state.selPayment}));
+  }
+  state.orderCount++;document.getElementById('statOrders').textContent=state.orderCount;
+  state.selPkg=null;state.selPayment=null;state.uploadedFile=null;
+  document.getElementById('playerIdInput').value='';
+  document.getElementById('uploadName').textContent='';
+  document.getElementById('fileInput').value='';
+  renderPackages();
+}
+
+function openAddBalance(){
+  document.getElementById('customAmount').value='';
+  document.getElementById('depUploadName').textContent='';
+  state.depFile=null;state.selDepMethod=null;
+  document.querySelectorAll('#balanceSheet .pay-method').forEach(el=>el.classList.remove('selected'));
+  document.getElementById('balanceSheet').classList.add('open');
+}
+
+function renderPresets(){
+  const grid=document.getElementById('amountGrid');
+  PRESETS.forEach(amt=>{
+    const btn=document.createElement('button');btn.className='amount-btn';btn.textContent=amt+' AFN';
+    btn.onclick=()=>{document.getElementById('customAmount').value=amt;document.querySelectorAll('.amount-btn').forEach(b=>b.classList.remove('sel'));btn.classList.add('sel');};
+    grid.appendChild(btn);
+  });
+}
+
+function selectDepositMethod(m){
+  state.selDepMethod=m;
+  document.getElementById('dep-hesabpay').classList.toggle('selected',m==='hesabpay');
+  document.getElementById('dep-usdt').classList.toggle('selected',m==='usdt');
+}
+
+function handleDepFileUpload(input){if(input.files[0]){state.depFile=input.files[0];document.getElementById('depUploadName').textContent='✅ '+input.files[0].name;}}
+
+function submitDeposit(){
+  const amount=parseInt(document.getElementById('customAmount').value)||0;
+  if(amount<50){showToast('Minimum deposit is 50 AFN','error');return;}
+  if(!state.selDepMethod){showToast('Choose a payment method','error');return;}
+  if(!state.depFile){showToast('Upload your payment screenshot','error');return;}
+  closeSheet('balanceSheet');showToast('✅ Deposit sent to admin for confirmation','success');
+  if(tg)tg.sendData(JSON.stringify({type:'deposit',amount,method:state.selDepMethod}));
+}
+
+function refreshAccount(){
+  document.getElementById('statBalance').textContent=state.wallet;
+  document.getElementById('statOrders').textContent=state.orderCount;
+  const list=document.getElementById('historyList');
+  if(state.history.length===0){list.innerHTML='<div style="text-align:center;color:var(--muted);padding:30px 0;font-size:13px">No orders yet</div>';}
+  else{list.innerHTML=state.history.map(h=>`<div class="history-item"><div class="hist-icon">${h.icon}</div><div class="hist-info"><h4>${h.title}</h4><p>${h.sub}</p></div><div class="hist-amount">${h.amount}</div></div>`).join('');}
+}
+
+function addHistory(icon,title,sub,amount){state.history.unshift({icon,title,sub,amount});}
+function closeSheet(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,type=''){const t=document.getElementById('toast');t.textContent=msg;t.className='toast '+type+' show';setTimeout(()=>t.classList.remove('show'),2800);}
+
+init();
+</script>
+</body>
+</html>
