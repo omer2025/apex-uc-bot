@@ -1,5 +1,9 @@
-import os
+from pathlib import Path
+
+bot_code = r'''import os
 import logging
+import sqlite3
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -22,7 +26,6 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-USDT_WALLET = os.getenv("USDT_WALLET", "YOUR_USDT_WALLET")
 HESABPAY_NUMBER = os.getenv("HESABPAY_NUMBER", "+93 789 077 537")
 WHATSAPP = os.getenv("WHATSAPP", "+93 789 077 537")
 TELEGRAM_SUPPORT = os.getenv("TELEGRAM_SUPPORT", "@Wajid_gaming_store")
@@ -33,130 +36,542 @@ if ADMIN_ID == 0:
     raise ValueError("ADMIN_ID missing. Set it in environment variables.")
 
 # =========================
-# UC PACKAGES
+# SETTINGS - AFN ONLY / 60 UC ONLY
 # =========================
-PACKAGES = {
-    "60UC":   {"uc": 60,   "afn": 60,   "usd": 0.95},
-    "325UC":  {"uc": 325,  "afn": 300,  "usd": 4.50},
-    "660UC":  {"uc": 660,  "afn": 590,  "usd": 9.10},
-    "1800UC": {"uc": 1800, "afn": 1470, "usd": 22.65},
-    "3850UC": {"uc": 3850, "afn": 2960, "usd": 45.50},
-    "8100UC": {"uc": 8100, "afn": 5910, "usd": 90.85},
-}
+PRODUCT_KEY = "60UC"
+PRODUCT_UC = 60
+PRODUCT_PRICE_AFN = int(os.getenv("UC60_PRICE_AFN", "60"))
 
-# =========================
-# IN-MEMORY STORAGE
-# WARNING: Resets on restart. Move to a database (e.g. Supabase) for production.
-#
-# wallets               → { user_id: balance_afn }
-# pending_wallet_deposits → { deposit_id: {...} }
-# pending_orders        → { order_id: {...} }
-# code_store            → { pkg_key: ["CODE1", "CODE2", ...] }
-# =========================
-wallets: dict = {}
-pending_wallet_deposits: dict = {}
-pending_orders: dict = {}
-code_store: dict = {key: [] for key in PACKAGES}   # pre-fill keys
+DB_PATH = "apex_uc_bot.db"
 
-# =========================
-# CONVERSATION STATES
-# =========================
 (
-    SELECT_CURRENCY,
-    SELECT_PACKAGE,
+    MAIN_MENU,
     ENTER_PLAYER_ID,
     SELECT_PAYMENT,
-    SEND_SCREENSHOT,
+    SEND_ORDER_SCREENSHOT,
     ENTER_WALLET_AMOUNT,
     SEND_WALLET_SCREENSHOT,
     ADMIN_ADD_CODES,
+    ADMIN_SET_PRICE,
 ) = range(8)
 
 
 # =========================
-# HELPERS
+# DATABASE
 # =========================
-def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎮 Buy UC",       callback_data="buy_uc")],
-        [InlineKeyboardButton("💰 My Wallet",    callback_data="wallet")],
-        [InlineKeyboardButton("📞 Support",      callback_data="support")],
-    ])
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def admin_keyboard() -> InlineKeyboardMarkup:
-    """Extra keyboard shown only to the admin in /start."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎮 Buy UC",          callback_data="buy_uc")],
-        [InlineKeyboardButton("💰 My Wallet",       callback_data="wallet")],
-        [InlineKeyboardButton("📞 Support",         callback_data="support")],
-        [InlineKeyboardButton("🗄️ Manage UC Codes", callback_data="admin_codes")],
-    ])
+def init_db():
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                balance_afn INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uc_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_key TEXT NOT NULL,
+                code TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'available',
+                used_by INTEGER,
+                used_order_id INTEGER,
+                added_at TEXT,
+                used_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                product_key TEXT NOT NULL,
+                uc_amount INTEGER NOT NULL,
+                price_afn INTEGER NOT NULL,
+                player_id TEXT NOT NULL,
+                payment_method TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                code_id INTEGER,
+                created_at TEXT,
+                confirmed_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS wallet_deposits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                amount_afn INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT,
+                confirmed_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES('uc60_price_afn', ?)",
+            (str(PRODUCT_PRICE_AFN),)
+        )
+
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ensure_user(user):
+    with db() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO users(user_id, username, first_name, balance_afn, created_at)
+            VALUES (?, ?, ?, 0, ?)
+        """, (user.id, user.username or "", user.first_name or "", now()))
+        conn.execute("""
+            UPDATE users SET username=?, first_name=? WHERE user_id=?
+        """, (user.username or "", user.first_name or "", user.id))
+
+
+def get_price_afn():
+    with db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='uc60_price_afn'").fetchone()
+        return int(row["value"]) if row else PRODUCT_PRICE_AFN
+
+
+def set_price_afn(price):
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO settings(key, value) VALUES('uc60_price_afn', ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """, (str(price),))
+
+
+def get_balance(user_id):
+    with db() as conn:
+        row = conn.execute("SELECT balance_afn FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return int(row["balance_afn"]) if row else 0
+
+
+def add_balance(user_id, amount):
+    with db() as conn:
+        conn.execute("UPDATE users SET balance_afn = balance_afn + ? WHERE user_id=?", (amount, user_id))
+
+
+def deduct_balance(user_id, amount):
+    with db() as conn:
+        balance = get_balance(user_id)
+        if balance < amount:
+            return False
+        conn.execute("UPDATE users SET balance_afn = balance_afn - ? WHERE user_id=?", (amount, user_id))
+        return True
+
+
+def available_stock():
+    with db() as conn:
+        row = conn.execute("""
+            SELECT COUNT(*) AS count FROM uc_codes
+            WHERE product_key=? AND status='available'
+        """, (PRODUCT_KEY,)).fetchone()
+        return int(row["count"])
+
+
+def add_codes(codes):
+    added = 0
+    duplicates = 0
+    with db() as conn:
+        for code in codes:
+            try:
+                conn.execute("""
+                    INSERT INTO uc_codes(product_key, code, status, added_at)
+                    VALUES (?, ?, 'available', ?)
+                """, (PRODUCT_KEY, code, now()))
+                added += 1
+            except sqlite3.IntegrityError:
+                duplicates += 1
+    return added, duplicates
+
+
+def create_order(user, player_id, payment_method):
+    price = get_price_afn()
+    with db() as conn:
+        cur = conn.execute("""
+            INSERT INTO orders(user_id, username, first_name, product_key, uc_amount, price_afn,
+                               player_id, payment_method, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (
+            user.id,
+            user.username or "",
+            user.first_name or "",
+            PRODUCT_KEY,
+            PRODUCT_UC,
+            price,
+            player_id,
+            payment_method,
+            now(),
+        ))
+        return cur.lastrowid
+
+
+def create_wallet_deposit(user, amount):
+    with db() as conn:
+        cur = conn.execute("""
+            INSERT INTO wallet_deposits(user_id, username, first_name, amount_afn, status, created_at)
+            VALUES (?, ?, ?, ?, 'pending', ?)
+        """, (user.id, user.username or "", user.first_name or "", amount, now()))
+        return cur.lastrowid
+
+
+def get_order(order_id):
+    with db() as conn:
+        return conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+
+
+def get_deposit(deposit_id):
+    with db() as conn:
+        return conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
+
+
+def deliver_code_for_order(order_id):
+    """
+    Returns: (ok, message, code, remaining_stock)
+    """
+    with db() as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            return False, "Order not found.", None, available_stock()
+        if order["status"] != "pending":
+            return False, "Order already handled.", None, available_stock()
+
+        code_row = conn.execute("""
+            SELECT id, code FROM uc_codes
+            WHERE product_key=? AND status='available'
+            ORDER BY id ASC
+            LIMIT 1
+        """, (PRODUCT_KEY,)).fetchone()
+
+        if not code_row:
+            return False, "Out of stock. Add codes first.", None, 0
+
+        conn.execute("""
+            UPDATE uc_codes
+            SET status='used', used_by=?, used_order_id=?, used_at=?
+            WHERE id=?
+        """, (order["user_id"], order_id, now(), code_row["id"]))
+
+        conn.execute("""
+            UPDATE orders
+            SET status='confirmed', code_id=?, confirmed_at=?
+            WHERE id=?
+        """, (code_row["id"], now(), order_id))
+
+        remaining = conn.execute("""
+            SELECT COUNT(*) AS count FROM uc_codes
+            WHERE product_key=? AND status='available'
+        """, (PRODUCT_KEY,)).fetchone()["count"]
+
+        return True, "Code delivered.", code_row["code"], int(remaining)
+
+
+def reject_order(order_id):
+    with db() as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order or order["status"] != "pending":
+            return None
+        conn.execute("UPDATE orders SET status='rejected' WHERE id=?", (order_id,))
+        return order
+
+
+def confirm_deposit(deposit_id):
+    with db() as conn:
+        dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
+        if not dep or dep["status"] != "pending":
+            return None
+        conn.execute("""
+            UPDATE wallet_deposits SET status='confirmed', confirmed_at=? WHERE id=?
+        """, (now(), deposit_id))
+        conn.execute("""
+            UPDATE users SET balance_afn = balance_afn + ? WHERE user_id=?
+        """, (dep["amount_afn"], dep["user_id"]))
+        return dep
+
+
+def reject_deposit(deposit_id):
+    with db() as conn:
+        dep = conn.execute("SELECT * FROM wallet_deposits WHERE id=?", (deposit_id,)).fetchone()
+        if not dep or dep["status"] != "pending":
+            return None
+        conn.execute("UPDATE wallet_deposits SET status='rejected' WHERE id=?", (deposit_id,))
+        return dep
 
 
 # =========================
-# START / MENU
+# KEYBOARDS
+# =========================
+def menu_keyboard(is_admin=False):
+    rows = [
+        [InlineKeyboardButton("🎮 Buy 60 UC", callback_data="buy_60uc")],
+        [InlineKeyboardButton("💰 My Wallet", callback_data="wallet")],
+        [InlineKeyboardButton("📞 Support", callback_data="support")],
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton("🗄️ Manage UC Codes", callback_data="admin_codes")])
+        rows.append([InlineKeyboardButton("💵 Set 60 UC Price", callback_data="admin_set_price")])
+    return InlineKeyboardMarkup(rows)
+
+
+def back_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]])
+
+
+# =========================
+# USER FLOW
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ensure_user(update.message.from_user)
     context.user_data.clear()
-    is_admin = update.message.from_user.id == ADMIN_ID
-    kb = admin_keyboard() if is_admin else main_keyboard()
+    user = update.message.from_user
+    is_admin = user.id == ADMIN_ID
 
     await update.message.reply_text(
         "🎮 *Welcome to Apex Digital House!*\n\n"
-        "Afghanistan's #1 PUBG UC Store 🇦🇫\n\n"
-        "✅ Fast delivery\n"
-        "✅ Best prices\n"
-        "✅ 24/7 support\n\n"
-        "What would you like to do?",
+        "🇦🇫 PUBG Mobile UC Store\n\n"
+        f"✅ Product: *60 UC only*\n"
+        f"💰 Price: *{get_price_afn()} AFN*\n"
+        f"🗄️ Ready stock: *{available_stock()} code(s)*\n\n"
+        "Choose an option below:",
         parse_mode="Markdown",
-        reply_markup=kb,
+        reply_markup=menu_keyboard(is_admin),
     )
-    return SELECT_CURRENCY
+    return MAIN_MENU
 
 
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    ensure_user(query.from_user)
     context.user_data.clear()
-    is_admin = query.from_user.id == ADMIN_ID
-    kb = admin_keyboard() if is_admin else main_keyboard()
 
     await query.edit_message_text(
-        "🎮 *Welcome to Apex Digital House!*\n\n"
-        "What would you like to do?",
+        "🎮 *Apex Digital House*\n\n"
+        f"60 UC Price: *{get_price_afn()} AFN*\n"
+        f"Ready stock: *{available_stock()} code(s)*\n\n"
+        "Choose an option:",
         parse_mode="Markdown",
-        reply_markup=kb,
+        reply_markup=menu_keyboard(query.from_user.id == ADMIN_ID),
     )
-    return SELECT_CURRENCY
+    return MAIN_MENU
 
 
-# =========================
-# SUPPORT
-# =========================
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buy_60uc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]]
+    ensure_user(query.from_user)
+
+    if available_stock() <= 0:
+        await query.edit_message_text(
+            "❌ *60 UC is out of stock right now.*\n\nPlease contact support.",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard(),
+        )
+        return MAIN_MENU
+
+    context.user_data["product"] = PRODUCT_KEY
+
     await query.edit_message_text(
-        f"📞 *Support & Help*\n\n"
-        f"💬 WhatsApp: {WHATSAPP}\n"
-        f"✈️ Telegram: {TELEGRAM_SUPPORT}\n\n"
-        "⏳ We respond within *30 minutes!*",
+        f"🎮 *Buy 60 UC*\n\n"
+        f"Price: *{get_price_afn()} AFN*\n\n"
+        "Please enter your PUBG Mobile Player ID.\n\n"
+        "⚠️ Double-check your Player ID. Wrong ID = wrong delivery.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    return SELECT_CURRENCY
+    return ENTER_PLAYER_ID
 
 
-async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    player_id = update.message.text.strip()
+
+    if not player_id.isdigit() or len(player_id) < 5:
+        await update.message.reply_text("❌ Please enter a valid numeric PUBG Player ID.")
+        return ENTER_PLAYER_ID
+
+    context.user_data["player_id"] = player_id
+    user_id = update.message.from_user.id
+    price = get_price_afn()
+    balance = get_balance(user_id)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Pay From Wallet", callback_data="pay_wallet")],
+        [InlineKeyboardButton("📲 Direct HesabPay Transfer", callback_data="pay_hesabpay")],
+        [InlineKeyboardButton("🔙 Start Over", callback_data="main_menu")],
+    ])
+
     await update.message.reply_text(
-        f"📞 *Support & Help*\n\n"
-        f"💬 WhatsApp: {WHATSAPP}\n"
-        f"✈️ Telegram: {TELEGRAM_SUPPORT}\n\n"
-        "⏳ We respond within *30 minutes!*",
+        f"📋 *Order Summary*\n\n"
+        f"🎮 Package: *60 UC*\n"
+        f"🎯 Player ID: `{player_id}`\n"
+        f"💰 Price: *{price} AFN*\n"
+        f"💳 Your wallet: *{balance} AFN*\n\n"
+        "Choose payment method:",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+    return SELECT_PAYMENT
+
+
+async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    ensure_user(query.from_user)
+
+    player_id = context.user_data.get("player_id")
+    if not player_id:
+        await query.edit_message_text("❌ Session expired. Type /start again.")
+        return ConversationHandler.END
+
+    price = get_price_afn()
+    user = query.from_user
+    payment = query.data.replace("pay_", "")
+
+    if payment == "wallet":
+        balance = get_balance(user.id)
+        if balance < price:
+            await query.edit_message_text(
+                f"❌ *Not enough wallet balance.*\n\n"
+                f"Your wallet: *{balance} AFN*\n"
+                f"Price: *{price} AFN*\n\n"
+                "You can add balance or use direct HesabPay transfer.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Add Wallet Balance", callback_data="add_wallet_balance")],
+                    [InlineKeyboardButton("📲 Direct HesabPay Transfer", callback_data="pay_hesabpay")],
+                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
+                ]),
+            )
+            return SELECT_PAYMENT
+
+        if available_stock() <= 0:
+            await query.edit_message_text("❌ Out of stock. Please contact support.", reply_markup=back_keyboard())
+            return MAIN_MENU
+
+        order_id = create_order(user, player_id, "wallet")
+        if not deduct_balance(user.id, price):
+            await query.edit_message_text("❌ Wallet payment failed. Please try again.")
+            return ConversationHandler.END
+
+        ok, msg, code, remaining = deliver_code_for_order(order_id)
+        if not ok:
+            add_balance(user.id, price)
+            await query.edit_message_text(f"❌ {msg}\nYour wallet was refunded.", reply_markup=back_keyboard())
+            return MAIN_MENU
+
+        new_balance = get_balance(user.id)
+
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"✅ *AUTO DELIVERY — WALLET PAID*\n\n"
+            f"Order ID: `{order_id}`\n"
+            f"User: {user.first_name} (@{user.username or 'N/A'})\n"
+            f"Telegram ID: `{user.id}`\n"
+            f"Package: *60 UC*\n"
+            f"Price: *{price} AFN*\n"
+            f"Player ID: `{player_id}`\n"
+            f"Code sent: `{code}`\n"
+            f"Remaining stock: *{remaining}*",
+            parse_mode="Markdown",
+        )
+
+        await query.edit_message_text(
+            f"⚡ *UC Code Delivery Completed!*\n\n"
+            f"🆔 Order ID: `#{order_id}`\n"
+            f"🎮 Package: *60 UC*\n"
+            f"🎯 Player ID: `{player_id}`\n"
+            f"💰 Paid: *{price} AFN*\n"
+            f"💳 Balance After: *{new_balance} AFN*\n\n"
+            f"📦 *Redeem Code:*\n"
+            f"✅ `{code}`\n\n"
+            "Thank you for shopping with Apex Digital House 🇦🇫",
+            parse_mode="Markdown",
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Direct transfer
+    order_id = create_order(user, player_id, "hesabpay")
+    context.user_data["order_id"] = order_id
+
+    await query.edit_message_text(
+        f"📲 *Direct HesabPay Transfer*\n\n"
+        f"Order ID: `#{order_id}`\n"
+        f"Package: *60 UC*\n"
+        f"Player ID: `{player_id}`\n"
+        f"Amount: *{price} AFN*\n\n"
+        f"Send payment to HesabPay:\n`{HESABPAY_NUMBER}`\n\n"
+        "After payment, send the screenshot here. 📸",
         parse_mode="Markdown",
     )
+    return SEND_ORDER_SCREENSHOT
+
+
+async def receive_order_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    order_id = context.user_data.get("order_id")
+    if not order_id:
+        await update.message.reply_text("❌ Session expired. Type /start again.")
+        return ConversationHandler.END
+
+    order = get_order(order_id)
+    user = update.message.from_user
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirm & Send Code", callback_data=f"order_confirm_{order_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"order_reject_{order_id}"),
+    ]])
+
+    caption = (
+        f"🔔 *NEW 60 UC ORDER — DIRECT TRANSFER*\n\n"
+        f"Order ID: `#{order_id}`\n"
+        f"User: {user.first_name} (@{user.username or 'N/A'})\n"
+        f"Telegram ID: `{user.id}`\n\n"
+        f"Package: *60 UC*\n"
+        f"Price: *{order['price_afn']} AFN*\n"
+        f"Player ID: `{order['player_id']}`\n"
+        f"Stock: *{available_stock()} code(s)*"
+    )
+
+    if update.message.photo:
+        await context.bot.send_photo(
+            ADMIN_ID,
+            update.message.photo[-1].file_id,
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+    else:
+        await context.bot.send_message(
+            ADMIN_ID,
+            caption + "\n\n⚠️ Customer did not send a photo screenshot.",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    await update.message.reply_text(
+        "✅ *Order received!*\n\n"
+        "We are checking your payment. Your UC code will be sent here after confirmation.",
+        parse_mode="Markdown",
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 # =========================
@@ -165,31 +580,32 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    balance = wallets.get(user_id, 0)
+    ensure_user(query.from_user)
 
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Balance", callback_data="add_wallet_balance")],
-        [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
-    ]
+    balance = get_balance(query.from_user.id)
     await query.edit_message_text(
         f"💰 *Your Wallet*\n\n"
         f"Balance: *{balance} AFN*\n\n"
-        "Choose an option:",
+        "You can add balance first, then future orders can be delivered instantly.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add Wallet Balance", callback_data="add_wallet_balance")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
+        ]),
     )
-    return SELECT_CURRENCY
+    return MAIN_MENU
 
 
 async def add_wallet_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    ensure_user(query.from_user)
+
     await query.edit_message_text(
         "➕ *Add Wallet Balance*\n\n"
-        "Type the amount in AFN you want to add.\n\n"
+        "Type the amount in AFN.\n\n"
         "Example: `500`\n"
-        "Minimum: 50 AFN",
+        "Minimum: *50 AFN*",
         parse_mode="Markdown",
     )
     return ENTER_WALLET_AMOUNT
@@ -199,14 +615,15 @@ async def enter_wallet_amount(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         amount = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Please enter a valid number like `500`.", parse_mode="Markdown")
+        await update.message.reply_text("❌ Enter a number only. Example: `500`", parse_mode="Markdown")
         return ENTER_WALLET_AMOUNT
 
     if amount < 50:
-        await update.message.reply_text("❌ Minimum deposit is 50 AFN.")
+        await update.message.reply_text("❌ Minimum wallet deposit is 50 AFN.")
         return ENTER_WALLET_AMOUNT
 
     context.user_data["wallet_amount"] = amount
+
     await update.message.reply_text(
         f"📲 *Wallet Deposit: {amount} AFN*\n\n"
         f"Send payment to HesabPay:\n`{HESABPAY_NUMBER}`\n\n"
@@ -218,29 +635,24 @@ async def enter_wallet_amount(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def receive_wallet_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = context.user_data.get("wallet_amount")
-    user = update.message.from_user
-
     if not amount:
-        await update.message.reply_text("❌ Session expired. Please type /start again.")
+        await update.message.reply_text("❌ Session expired. Type /start again.")
         return ConversationHandler.END
 
-    deposit_id = f"WALLET-{user.id}-{update.message.message_id}"
-    pending_wallet_deposits[deposit_id] = {
-        "user_id":    user.id,
-        "amount":     amount,
-        "username":   user.username or "N/A",
-        "first_name": user.first_name or "",
-    }
+    user = update.message.from_user
+    ensure_user(user)
+    deposit_id = create_wallet_deposit(user, amount)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Confirm", callback_data=f"wallet_confirm_{deposit_id}"),
-        InlineKeyboardButton("❌ Reject",  callback_data=f"wallet_reject_{deposit_id}"),
+        InlineKeyboardButton("✅ Confirm Deposit", callback_data=f"wallet_confirm_{deposit_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"wallet_reject_{deposit_id}"),
     ]])
+
     caption = (
-        f"💰 *WALLET DEPOSIT REQUEST*\n\n"
-        f"👤 {user.first_name} (@{user.username or 'N/A'})\n"
-        f"🆔 Telegram ID: `{user.id}`\n"
-        f"Deposit ID: `{deposit_id}`\n\n"
+        f"💰 *NEW WALLET DEPOSIT*\n\n"
+        f"Deposit ID: `#{deposit_id}`\n"
+        f"User: {user.first_name} (@{user.username or 'N/A'})\n"
+        f"Telegram ID: `{user.id}`\n"
         f"Amount: *{amount} AFN*"
     )
 
@@ -255,19 +667,100 @@ async def receive_wallet_screenshot(update: Update, context: ContextTypes.DEFAUL
     else:
         await context.bot.send_message(
             ADMIN_ID,
-            caption + "\n\n⚠️ No screenshot sent.",
+            caption + "\n\n⚠️ Customer did not send a photo screenshot.",
             parse_mode="Markdown",
             reply_markup=keyboard,
         )
 
     await update.message.reply_text(
-        "✅ *Deposit request received!*\n\n"
-        f"Amount: *{amount} AFN*\n\n"
-        "Waiting for admin to confirm your payment. ⏳",
+        "✅ *Wallet deposit request received!*\n\nWaiting for admin confirmation.",
         parse_mode="Markdown",
     )
     context.user_data.clear()
     return ConversationHandler.END
+
+
+# =========================
+# ADMIN ACTIONS
+# =========================
+async def order_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("⛔ Not authorized.", show_alert=True)
+        return
+
+    data = query.data
+
+    if data.startswith("order_confirm_"):
+        order_id = int(data.replace("order_confirm_", ""))
+        order = get_order(order_id)
+        if not order or order["status"] != "pending":
+            text = "⚠️ Order already handled or not found."
+            if query.message.photo:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text)
+            return
+
+        ok, msg, code, remaining = deliver_code_for_order(order_id)
+        if not ok:
+            text = f"❌ {msg}"
+            if query.message.photo:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text)
+            return
+
+        await context.bot.send_message(
+            order["user_id"],
+            f"⚡ *UC Code Delivery Completed!*\n\n"
+            f"🆔 Order ID: `#{order_id}`\n"
+            f"🎮 Package: *60 UC*\n"
+            f"🎯 Player ID: `{order['player_id']}`\n"
+            f"💰 Paid: *{order['price_afn']} AFN*\n\n"
+            f"📦 *Redeem Code:*\n"
+            f"✅ `{code}`\n\n"
+            "Thank you for shopping with Apex Digital House 🇦🇫",
+            parse_mode="Markdown",
+        )
+
+        text = (
+            f"✅ *Order Confirmed & Code Sent*\n\n"
+            f"Order ID: `#{order_id}`\n"
+            f"Code sent: `{code}`\n"
+            f"Remaining stock: *{remaining}*"
+        )
+        if query.message.photo:
+            await query.edit_message_caption(caption=text, parse_mode="Markdown")
+        else:
+            await query.edit_message_text(text, parse_mode="Markdown")
+
+    elif data.startswith("order_reject_"):
+        order_id = int(data.replace("order_reject_", ""))
+        order = reject_order(order_id)
+        if not order:
+            text = "⚠️ Order already handled or not found."
+            if query.message.photo:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text)
+            return
+
+        await context.bot.send_message(
+            order["user_id"],
+            f"❌ *Payment Not Confirmed*\n\n"
+            f"Your order `#{order_id}` for *60 UC* was rejected.\n\n"
+            f"Please contact support: {TELEGRAM_SUPPORT}",
+            parse_mode="Markdown",
+        )
+
+        text = f"❌ Order rejected — `#{order_id}`"
+        if query.message.photo:
+            await query.edit_message_caption(caption=text, parse_mode="Markdown")
+        else:
+            await query.edit_message_text(text, parse_mode="Markdown")
 
 
 async def wallet_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,104 +774,98 @@ async def wallet_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
 
     if data.startswith("wallet_confirm_"):
-        deposit_id = data.replace("wallet_confirm_", "")
-        deposit = pending_wallet_deposits.get(deposit_id)
-        if not deposit:
-            await query.edit_message_caption(caption="⚠️ Already handled or not found.")
+        deposit_id = int(data.replace("wallet_confirm_", ""))
+        dep = confirm_deposit(deposit_id)
+        if not dep:
+            text = "⚠️ Deposit already handled or not found."
+            if query.message.photo:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text)
             return
 
-        user_id = deposit["user_id"]
-        amount  = deposit["amount"]
-        wallets[user_id] = wallets.get(user_id, 0) + amount
-        new_balance = wallets[user_id]
+        new_balance = get_balance(dep["user_id"])
 
         await context.bot.send_message(
-            user_id,
-            f"✅ *Payment Confirmed!*\n\n"
-            f"*{amount} AFN* added to your wallet.\n"
-            f"💰 New balance: *{new_balance} AFN*",
+            dep["user_id"],
+            f"✅ *Wallet Deposit Confirmed!*\n\n"
+            f"Amount added: *{dep['amount_afn']} AFN*\n"
+            f"New wallet balance: *{new_balance} AFN*",
             parse_mode="Markdown",
         )
-        pending_wallet_deposits.pop(deposit_id, None)
-        caption = f"✅ Confirmed — {amount} AFN added. New balance: {new_balance} AFN"
+
+        text = (
+            f"✅ *Deposit Confirmed*\n\n"
+            f"Deposit ID: `#{deposit_id}`\n"
+            f"Added: *{dep['amount_afn']} AFN*\n"
+            f"New balance: *{new_balance} AFN*"
+        )
         if query.message.photo:
-            await query.edit_message_caption(caption=caption)
+            await query.edit_message_caption(caption=text, parse_mode="Markdown")
         else:
-            await query.edit_message_text(caption)
+            await query.edit_message_text(text, parse_mode="Markdown")
 
     elif data.startswith("wallet_reject_"):
-        deposit_id = data.replace("wallet_reject_", "")
-        deposit = pending_wallet_deposits.get(deposit_id)
-        if not deposit:
-            await query.edit_message_caption(caption="⚠️ Already handled or not found.")
+        deposit_id = int(data.replace("wallet_reject_", ""))
+        dep = reject_deposit(deposit_id)
+        if not dep:
+            text = "⚠️ Deposit already handled or not found."
+            if query.message.photo:
+                await query.edit_message_caption(caption=text)
+            else:
+                await query.edit_message_text(text)
             return
 
-        user_id = deposit["user_id"]
-        amount  = deposit["amount"]
         await context.bot.send_message(
-            user_id,
-            f"❌ *Payment Rejected*\n\n"
-            f"Your deposit of *{amount} AFN* was not approved.\n"
-            "Contact support if you think this is a mistake.",
+            dep["user_id"],
+            f"❌ *Wallet Deposit Rejected*\n\n"
+            f"Deposit ID: `#{deposit_id}`\n"
+            f"Amount: *{dep['amount_afn']} AFN*\n\n"
+            "Contact support if this is a mistake.",
             parse_mode="Markdown",
         )
-        pending_wallet_deposits.pop(deposit_id, None)
-        caption = f"❌ Rejected — {amount} AFN deposit."
+
+        text = f"❌ Deposit rejected — `#{deposit_id}`"
         if query.message.photo:
-            await query.edit_message_caption(caption=caption)
+            await query.edit_message_caption(caption=text, parse_mode="Markdown")
         else:
-            await query.edit_message_text(caption)
+            await query.edit_message_text(text, parse_mode="Markdown")
 
 
-# =========================
-# ADMIN — CODE MANAGEMENT
-# =========================
 async def admin_codes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show admin the code inventory and options to add codes."""
     query = update.callback_query
     await query.answer()
 
     if query.from_user.id != ADMIN_ID:
         await query.answer("⛔ Not authorized.", show_alert=True)
-        return
-
-    lines = ["🗄️ *UC Code Inventory*\n"]
-    keyboard = []
-    for key, pkg in PACKAGES.items():
-        count = len(code_store.get(key, []))
-        status = "✅" if count > 0 else "❌ EMPTY"
-        lines.append(f"{status} *{pkg['uc']} UC* — {count} code(s) available")
-        keyboard.append([InlineKeyboardButton(
-            f"➕ Add codes for {pkg['uc']} UC",
-            callback_data=f"admin_addcodes_{key}",
-        )])
-
-    keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")])
+        return MAIN_MENU
 
     await query.edit_message_text(
-        "\n".join(lines),
+        f"🗄️ *60 UC Code Inventory*\n\n"
+        f"Available stock: *{available_stock()} code(s)*\n\n"
+        "Choose an option:",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Add 60 UC Codes", callback_data="admin_add_codes")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
+        ]),
     )
-    return SELECT_CURRENCY
+    return MAIN_MENU
 
 
 async def admin_start_add_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin picked a package to add codes to."""
     query = update.callback_query
     await query.answer()
 
     if query.from_user.id != ADMIN_ID:
-        return
-
-    pkg_key = query.data.replace("admin_addcodes_", "")
-    context.user_data["adding_codes_for"] = pkg_key
-    pkg = PACKAGES[pkg_key]
+        await query.answer("⛔ Not authorized.", show_alert=True)
+        return MAIN_MENU
 
     await query.edit_message_text(
-        f"➕ *Adding codes for {pkg['uc']} UC*\n\n"
-        "Send one code per line. Example:\n\n"
-        "`CODE-ABCD-1234\nCODE-EFGH-5678`\n\n"
+        "➕ *Add 60 UC Codes*\n\n"
+        "Send one code per line.\n\n"
+        "Example:\n"
+        "`CODE123\nCODE456\nCODE789`\n\n"
         "Type /cancel to stop.",
         parse_mode="Markdown",
     )
@@ -386,488 +873,141 @@ async def admin_start_add_codes(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def admin_receive_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends lines of codes; store them."""
     if update.message.from_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Not authorized.")
         return ConversationHandler.END
 
-    pkg_key = context.user_data.get("adding_codes_for")
-    if not pkg_key:
-        await update.message.reply_text("❌ Session lost. Start again from the menu.")
-        return ConversationHandler.END
-
-    raw   = update.message.text.strip()
-    codes = [c.strip() for c in raw.splitlines() if c.strip()]
-
+    codes = [line.strip() for line in update.message.text.splitlines() if line.strip()]
     if not codes:
-        await update.message.reply_text("❌ No valid codes found. Please send one code per line.")
+        await update.message.reply_text("❌ No codes found. Send one code per line.")
         return ADMIN_ADD_CODES
 
-    code_store.setdefault(pkg_key, []).extend(codes)
-    pkg = PACKAGES[pkg_key]
+    added, duplicates = add_codes(codes)
 
     await update.message.reply_text(
-        f"✅ *{len(codes)} code(s) added* for *{pkg['uc']} UC*!\n\n"
-        f"Total in stock: *{len(code_store[pkg_key])} code(s)*",
+        f"✅ *Codes Added*\n\n"
+        f"Added: *{added}*\n"
+        f"Duplicates skipped: *{duplicates}*\n"
+        f"Current stock: *{available_stock()}*",
         parse_mode="Markdown",
     )
-    context.user_data.clear()
     return ConversationHandler.END
 
 
-# =========================
-# BUY UC
-# =========================
-async def buy_uc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [InlineKeyboardButton("💵 Pay in USD (USDT)", callback_data="currency_usd")],
-        [InlineKeyboardButton("🇦🇫 Pay in Afghani (AFN)", callback_data="currency_afn")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
-    ]
-    await query.edit_message_text(
-        "🎮 *Buy PUBG UC*\n\nSelect your payment currency:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return SELECT_CURRENCY
-
-
-async def select_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    currency = "usd" if "usd" in query.data else "afn"
-    context.user_data["currency"] = currency
-
-    keyboard = []
-    for key, pkg in PACKAGES.items():
-        count = len(code_store.get(key, []))
-        stock = f"({count} in stock)" if count > 0 else "(OUT OF STOCK)"
-        label = (
-            f"🎮 {pkg['uc']} UC — ${pkg['usd']} {stock}"
-            if currency == "usd"
-            else f"🎮 {pkg['uc']} UC — {pkg['afn']} AFN {stock}"
-        )
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"pkg_{key}")])
-
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="buy_uc")])
-    await query.edit_message_text(
-        "🎮 *Select UC Package:*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return SELECT_PACKAGE
-
-
-async def select_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    pkg_key = query.data.split("_", 1)[1]
-    pkg     = PACKAGES[pkg_key]
-
-    # Check stock
-    if not code_store.get(pkg_key):
-        await query.answer("⚠️ This package is currently out of stock!", show_alert=True)
-        return SELECT_PACKAGE
-
-    context.user_data["package"] = pkg_key
-    currency = context.user_data["currency"]
-    price    = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
-
-    await query.edit_message_text(
-        f"✅ Selected: *{pkg['uc']} UC* — *{price}*\n\n"
-        "📝 Please enter your *PUBG Mobile Player ID*\n\n"
-        "How to find your Player ID:\n"
-        "1️⃣ Open PUBG Mobile\n"
-        "2️⃣ Tap your profile picture\n"
-        "3️⃣ Your ID is shown below your name\n\n"
-        "⌨️ Type your Player ID now:",
-        parse_mode="Markdown",
-    )
-    return ENTER_PLAYER_ID
-
-
-async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    player_id = update.message.text.strip()
-
-    if not player_id.isdigit() or len(player_id) < 5:
-        await update.message.reply_text(
-            "❌ Please enter a valid numeric PUBG Player ID (at least 5 digits)."
-        )
-        return ENTER_PLAYER_ID
-
-    context.user_data["player_id"] = player_id
-    currency = context.user_data["currency"]
-    pkg_key  = context.user_data["package"]
-    pkg      = PACKAGES[pkg_key]
-    price    = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
-    user_id  = update.message.from_user.id
-    balance  = wallets.get(user_id, 0)
-
-    if currency == "usd":
-        keyboard = [
-            [InlineKeyboardButton("💎 USDT (TRC20)", callback_data="pay_usdt")],
-            [InlineKeyboardButton("🔙 Start Over",    callback_data="buy_uc")],
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("💰 Pay From Wallet", callback_data="pay_wallet")],
-            [InlineKeyboardButton("📲 HesabPay",        callback_data="pay_hesabpay")],
-            [InlineKeyboardButton("🔙 Start Over",      callback_data="buy_uc")],
-        ]
-
-    await update.message.reply_text(
-        f"✅ Player ID: *{player_id}*\n"
-        f"🎮 Package: *{pkg['uc']} UC*\n"
-        f"💰 Price: *{price}*\n\n"
-        f"💳 Your wallet balance: *{balance} AFN*\n\n"
-        "⚠️ *Double-check your Player ID!* Wrong ID = UC sent to wrong account!\n\n"
-        "Select payment method:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return SELECT_PAYMENT
-
-
-async def select_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query    = update.callback_query
-    await query.answer()
-
-    payment  = query.data.split("_", 1)[1]
-    pkg_key  = context.user_data["package"]
-    pkg      = PACKAGES[pkg_key]
-    currency = context.user_data["currency"]
-    player_id = context.user_data["player_id"]
-    user_id  = query.from_user.id
-    price    = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
-
-    # ── Instant wallet payment ──────────────────────────────────────────────
-    if payment == "wallet":
-        if currency != "afn":
-            await query.edit_message_text("❌ Wallet payment is only available for AFN orders.")
-            return ConversationHandler.END
-
-        amount  = pkg["afn"]
-        balance = wallets.get(user_id, 0)
-
-        if balance < amount:
-            await query.edit_message_text(
-                f"❌ *Not enough wallet balance.*\n\n"
-                f"Your balance: *{balance} AFN*\n"
-                f"Order amount: *{amount} AFN*\n\n"
-                "Please add balance first.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Add Balance",  callback_data="add_wallet_balance")],
-                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")],
-                ]),
-            )
-            return SELECT_CURRENCY
-
-        # Check stock again right before delivery
-        if not code_store.get(pkg_key):
-            await query.edit_message_text(
-                "❌ *Out of stock!*\n\nSorry, this package just ran out. Contact support.",
-                parse_mode="Markdown",
-            )
-            return ConversationHandler.END
-
-        # Deduct balance and pop code
-        wallets[user_id]  = balance - amount
-        new_balance       = wallets[user_id]
-        code              = code_store[pkg_key].pop(0)
-
-        # Notify admin
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🎮 *UC ORDER (WALLET PAID — AUTO DELIVERED)*\n\n"
-            f"👤 User ID: `{user_id}`\n"
-            f"🎮 Package: *{pkg['uc']} UC*\n"
-            f"💰 Paid: *{amount} AFN* (from wallet)\n"
-            f"🎯 Player ID: `{player_id}`\n"
-            f"🔑 Code sent: `{code}`\n"
-            f"💰 Remaining wallet balance: *{new_balance} AFN*",
-            parse_mode="Markdown",
-        )
-
-        # Deliver code to user
-        await query.edit_message_text(
-            f"✅ *Payment Confirmed & UC Code Delivered!*\n\n"
-            f"🎮 Package: *{pkg['uc']} UC*\n"
-            f"🎯 Player ID: `{player_id}`\n"
-            f"💰 Paid: *{amount} AFN*\n"
-            f"💰 Remaining balance: *{new_balance} AFN*\n\n"
-            f"🔑 *Your UC Code:*\n`{code}`\n\n"
-            "Thank you for shopping at Apex Digital House! 🇦🇫",
-            parse_mode="Markdown",
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    # ── Manual payment (screenshot required) ───────────────────────────────
-    if payment == "usdt":
-        payment_text = (
-            f"💎 *Send USDT (TRC20) to:*\n\n"
-            f"`{USDT_WALLET}`\n\n"
-            f"💰 Amount: *{price}*\n\n"
-            "⚠️ TRC20 network only! Send exact amount!"
-        )
-    else:  # hesabpay
-        payment_text = (
-            f"📲 *Send via HesabPay to:*\n\n"
-            f"`{HESABPAY_NUMBER}`\n\n"
-            f"💰 Amount: *{price}*"
-        )
-
-    context.user_data["payment"] = payment
-
-    await query.edit_message_text(
-        f"📋 *Order Summary*\n"
-        f"🎮 {pkg['uc']} UC\n"
-        f"🎯 Player ID: `{player_id}`\n"
-        f"💰 {price}\n\n"
-        f"{payment_text}\n\n"
-        "📸 *After payment, send your screenshot here!*",
-        parse_mode="Markdown",
-    )
-    return SEND_SCREENSHOT
-
-
-async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pkg_key   = context.user_data.get("package")
-    player_id = context.user_data.get("player_id", "Unknown")
-    payment   = context.user_data.get("payment", "Unknown")
-
-    if not pkg_key:
-        await update.message.reply_text("❌ Session expired. Please type /start to begin again.")
-        return ConversationHandler.END
-
-    pkg      = PACKAGES[pkg_key]
-    currency = context.user_data.get("currency", "usd")
-    price    = f"${pkg['usd']}" if currency == "usd" else f"{pkg['afn']} AFN"
-    user     = update.message.from_user
-
-    order_id = f"ORDER-{user.id}-{update.message.message_id}"
-    pending_orders[order_id] = {
-        "user_id":   user.id,
-        "pkg_key":   pkg_key,
-        "player_id": player_id,
-        "payment":   payment,
-        "price":     price,
-    }
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Confirm & Send Code", callback_data=f"order_confirm_{order_id}"),
-        InlineKeyboardButton("❌ Reject",              callback_data=f"order_reject_{order_id}"),
-    ]])
-
-    admin_caption = (
-        f"🔔 *NEW UC ORDER*\n\n"
-        f"👤 {user.first_name} (@{user.username or 'N/A'})\n"
-        f"🆔 Telegram ID: `{user.id}`\n"
-        f"Order ID: `{order_id}`\n\n"
-        f"🎮 Package: *{pkg['uc']} UC*\n"
-        f"💰 Price: *{price}*\n"
-        f"🎯 Player ID: `{player_id}`\n"
-        f"💳 Payment: *{payment.upper()}*\n\n"
-        f"🗄️ Codes in stock for this package: *{len(code_store.get(pkg_key, []))}*"
-    )
-
-    if update.message.photo:
-        await context.bot.send_photo(
-            ADMIN_ID,
-            update.message.photo[-1].file_id,
-            caption=admin_caption,
-            parse_mode="Markdown",
-            reply_markup=keyboard,
-        )
-    else:
-        await context.bot.send_message(
-            ADMIN_ID,
-            admin_caption + "\n\n⚠️ No screenshot received!",
-            parse_mode="Markdown",
-            reply_markup=keyboard,
-        )
-
-    await update.message.reply_text(
-        "✅ *Order Received!*\n\n"
-        f"🎮 {pkg['uc']} UC\n"
-        f"🎯 Player ID: `{player_id}`\n"
-        f"💰 {price}\n\n"
-        "⏳ We are checking your payment.\n"
-        "Your UC code will be sent to you here once confirmed!\n\n"
-        "Need help? Type /support",
-        parse_mode="Markdown",
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-# =========================
-# ADMIN — ORDER CONFIRMATION
-# =========================
-async def order_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_set_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.from_user.id != ADMIN_ID:
         await query.answer("⛔ Not authorized.", show_alert=True)
-        return
+        return MAIN_MENU
 
-    data = query.data
-
-    if data.startswith("order_confirm_"):
-        order_id = data.replace("order_confirm_", "")
-        order    = pending_orders.get(order_id)
-        if not order:
-            if query.message.photo:
-                await query.edit_message_caption(caption="⚠️ Order already handled or not found.")
-            else:
-                await query.edit_message_text("⚠️ Order already handled or not found.")
-            return
-
-        pkg_key   = order["pkg_key"]
-        pkg       = PACKAGES[pkg_key]
-        user_id   = order["user_id"]
-        player_id = order["player_id"]
-
-        # Check stock
-        if not code_store.get(pkg_key):
-            if query.message.photo:
-                await query.edit_message_caption(
-                    caption=f"❌ Out of stock for {pkg['uc']} UC! Add codes first."
-                )
-            else:
-                await query.edit_message_text(
-                    f"❌ Out of stock for {pkg['uc']} UC! Add codes first."
-                )
-            return
-
-        # Pop a code
-        code = code_store[pkg_key].pop(0)
-        remaining = len(code_store[pkg_key])
-
-        # Send code to user
-        await context.bot.send_message(
-            user_id,
-            f"✅ *Payment Confirmed! Here is your UC Code:*\n\n"
-            f"🎮 Package: *{pkg['uc']} UC*\n"
-            f"🎯 Player ID: `{player_id}`\n\n"
-            f"🔑 *Your Code:*\n`{code}`\n\n"
-            "Thank you for shopping at Apex Digital House! 🇦🇫\n"
-            "New order? Type /start",
-            parse_mode="Markdown",
-        )
-
-        pending_orders.pop(order_id, None)
-        confirm_text = (
-            f"✅ *Order Confirmed & Code Sent*\n\n"
-            f"Order ID: `{order_id}`\n"
-            f"🔑 Code sent: `{code}`\n"
-            f"🗄️ Remaining stock for {pkg['uc']} UC: *{remaining}*"
-        )
-        if query.message.photo:
-            await query.edit_message_caption(caption=confirm_text, parse_mode="Markdown")
-        else:
-            await query.edit_message_text(confirm_text, parse_mode="Markdown")
-
-    elif data.startswith("order_reject_"):
-        order_id = data.replace("order_reject_", "")
-        order    = pending_orders.get(order_id)
-        if not order:
-            if query.message.photo:
-                await query.edit_message_caption(caption="⚠️ Order already handled or not found.")
-            else:
-                await query.edit_message_text("⚠️ Order already handled or not found.")
-            return
-
-        user_id = order["user_id"]
-        pkg     = PACKAGES[order["pkg_key"]]
-
-        await context.bot.send_message(
-            user_id,
-            f"❌ *Payment Not Confirmed*\n\n"
-            f"Your order for *{pkg['uc']} UC* was rejected.\n\n"
-            "Please contact support if you think this is a mistake.\n"
-            f"📞 {TELEGRAM_SUPPORT}",
-            parse_mode="Markdown",
-        )
-        pending_orders.pop(order_id, None)
-        reject_text = f"❌ Order rejected — {pkg['uc']} UC\nOrder ID: `{order_id}`"
-        if query.message.photo:
-            await query.edit_message_caption(caption=reject_text, parse_mode="Markdown")
-        else:
-            await query.edit_message_text(reject_text, parse_mode="Markdown")
+    await query.edit_message_text(
+        f"💵 *Set 60 UC Price*\n\n"
+        f"Current price: *{get_price_afn()} AFN*\n\n"
+        "Type the new price in AFN.\n\n"
+        "Example: `75`",
+        parse_mode="Markdown",
+    )
+    return ADMIN_SET_PRICE
 
 
-# =========================
-# CANCEL
-# =========================
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
+async def admin_set_price_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Not authorized.")
+        return ConversationHandler.END
+
+    try:
+        price = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Enter a number only. Example: `75`", parse_mode="Markdown")
+        return ADMIN_SET_PRICE
+
+    if price <= 0:
+        await update.message.reply_text("❌ Price must be greater than 0.")
+        return ADMIN_SET_PRICE
+
+    set_price_afn(price)
     await update.message.reply_text(
-        "❌ Cancelled.\n\nType /start to begin a new order.",
+        f"✅ 60 UC price updated to *{price} AFN*.",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
 
 
-# =========================
-# ADMIN COMMANDS
-# =========================
-async def admin_stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin only: /stock — show current code inventory."""
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Not authorized.")
         return
 
-    lines = ["🗄️ *Current UC Code Inventory*\n"]
-    for key, pkg in PACKAGES.items():
-        count  = len(code_store.get(key, []))
-        status = "✅" if count > 0 else "❌ EMPTY"
-        lines.append(f"{status} *{pkg['uc']} UC* — {count} code(s)")
+    await update.message.reply_text(
+        f"🗄️ *Stock Report*\n\n"
+        f"60 UC available codes: *{available_stock()}*\n"
+        f"Current price: *{get_price_afn()} AFN*",
+        parse_mode="Markdown",
+    )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        f"📞 *Support*\n\n"
+        f"WhatsApp: {WHATSAPP}\n"
+        f"Telegram: {TELEGRAM_SUPPORT}",
+        parse_mode="Markdown",
+        reply_markup=back_keyboard(),
+    )
+    return MAIN_MENU
+
+
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"📞 *Support*\n\n"
+        f"WhatsApp: {WHATSAPP}\n"
+        f"Telegram: {TELEGRAM_SUPPORT}",
+        parse_mode="Markdown",
+    )
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("❌ Cancelled. Type /start to begin again.")
+    return ConversationHandler.END
 
 
 # =========================
-# MAIN APP
+# MAIN
 # =========================
 if __name__ == "__main__":
+    init_db()
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            SELECT_CURRENCY: [
-                CallbackQueryHandler(buy_uc,             pattern="^buy_uc$"),
-                CallbackQueryHandler(wallet,             pattern="^wallet$"),
+            MAIN_MENU: [
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
+                CallbackQueryHandler(buy_60uc, pattern="^buy_60uc$"),
+                CallbackQueryHandler(wallet, pattern="^wallet$"),
                 CallbackQueryHandler(add_wallet_balance, pattern="^add_wallet_balance$"),
-                CallbackQueryHandler(support,            pattern="^support$"),
-                CallbackQueryHandler(select_currency,    pattern="^currency_"),
-                CallbackQueryHandler(admin_codes_menu,   pattern="^admin_codes$"),
-                CallbackQueryHandler(main_menu,          pattern="^main_menu$"),
-            ],
-            SELECT_PACKAGE: [
-                CallbackQueryHandler(select_currency,    pattern="^currency_"),
-                CallbackQueryHandler(select_package,     pattern="^pkg_"),
-                CallbackQueryHandler(buy_uc,             pattern="^buy_uc$"),
-                CallbackQueryHandler(main_menu,          pattern="^main_menu$"),
+                CallbackQueryHandler(support, pattern="^support$"),
+                CallbackQueryHandler(admin_codes_menu, pattern="^admin_codes$"),
+                CallbackQueryHandler(admin_start_add_codes, pattern="^admin_add_codes$"),
+                CallbackQueryHandler(admin_set_price_start, pattern="^admin_set_price$"),
             ],
             ENTER_PLAYER_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_player_id),
             ],
             SELECT_PAYMENT: [
-                CallbackQueryHandler(select_payment,     pattern="^pay_"),
+                CallbackQueryHandler(select_payment, pattern="^pay_"),
                 CallbackQueryHandler(add_wallet_balance, pattern="^add_wallet_balance$"),
-                CallbackQueryHandler(buy_uc,             pattern="^buy_uc$"),
-                CallbackQueryHandler(main_menu,          pattern="^main_menu$"),
+                CallbackQueryHandler(main_menu, pattern="^main_menu$"),
             ],
-            SEND_SCREENSHOT: [
-                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_screenshot),
+            SEND_ORDER_SCREENSHOT: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_order_screenshot),
             ],
             ENTER_WALLET_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_wallet_amount),
@@ -878,24 +1018,28 @@ if __name__ == "__main__":
             ADMIN_ADD_CODES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_codes),
             ],
+            ADMIN_SET_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_price_receive),
+            ],
         },
         fallbacks=[
-            CommandHandler("cancel",  cancel),
-            CommandHandler("start",   start),
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start),
             CommandHandler("support", support_command),
-            CommandHandler("stock",   admin_stock_command),
-            # Admin code management via callback (re-entry from any state)
-            CallbackQueryHandler(admin_codes_menu,      pattern="^admin_codes$"),
-            CallbackQueryHandler(admin_start_add_codes, pattern="^admin_addcodes_"),
-            CallbackQueryHandler(main_menu,             pattern="^main_menu$"),
         ],
+        allow_reentry=True,
     )
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("support", support_command))
-    app.add_handler(CommandHandler("stock",   admin_stock_command))
+    app.add_handler(CommandHandler("stock", stock_command))
+    app.add_handler(CallbackQueryHandler(order_admin_action, pattern="^order_(confirm|reject)_"))
     app.add_handler(CallbackQueryHandler(wallet_admin_action, pattern="^wallet_(confirm|reject)_"))
-    app.add_handler(CallbackQueryHandler(order_admin_action,  pattern="^order_(confirm|reject)_"))
 
-    print("🤖 Apex UC Bot is running...")
+    print("🤖 Apex 60 UC AFN Bot is running...")
     app.run_polling()
+'''
+
+path = Path("/mnt/data/apex_60uc_afn_bot.py")
+path.write_text(bot_code, encoding="utf-8")
+print(f"Created {path}")
