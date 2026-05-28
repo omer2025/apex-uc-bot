@@ -644,6 +644,61 @@ async def receive_deposit_screenshot(update: Update, context: ContextTypes.DEFAU
 
 
 
+async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pkg_key   = context.user_data.get("package")
+    player_id = context.user_data.get("player_id", "Unknown")
+    payment   = context.user_data.get("payment", "Unknown")
+
+    if not pkg_key:
+        await update.message.reply_text("❌ Session expired. Please type /start again.")
+        return ConversationHandler.END
+
+    pkg   = PACKAGES[pkg_key]
+    user  = update.message.from_user
+    price = f"${pkg['usd']}" if payment == "usdt" else f"{pkg['afn']} AFN"
+
+    order_id = f"ORDER-{user.id}-{update.message.message_id}"
+    pending_orders[order_id] = {
+        "user_id":   user.id,
+        "pkg_key":   pkg_key,
+        "player_id": player_id,
+        "payment":   payment,
+        "price":     price,
+    }
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirm & Send Code", callback_data=f"order_confirm_{order_id}"),
+        InlineKeyboardButton("❌ Reject",              callback_data=f"order_reject_{order_id}"),
+    ]])
+    caption = (
+        f"🔔 *NEW UC ORDER*\n\n"
+        f"👤 {user.first_name} (@{user.username or 'N/A'})\n"
+        f"🆔 `{user.id}`\n\n"
+        f"🎮 Package: *{pkg['uc']} UC*\n"
+        f"💰 Price: *{price}*\n"
+        f"🎯 Player ID: `{player_id}`\n"
+        f"💳 Payment: *{payment.upper()}*\n"
+        f"🗄️ Stock: *{len(code_store.get(pkg_key, []))}*"
+    )
+    if update.message.photo:
+        await context.bot.send_photo(ADMIN_ID, update.message.photo[-1].file_id,
+                                     caption=caption, parse_mode="Markdown", reply_markup=kb)
+    else:
+        await context.bot.send_message(ADMIN_ID, caption + "\n\n⚠️ No screenshot!",
+                                       parse_mode="Markdown", reply_markup=kb)
+
+    await update.message.reply_text(
+        f"✅ *Order Received!*\n\n"
+        f"🎮 {pkg['uc']} UC — {price}\n"
+        f"🎯 Player ID: `{player_id}`\n\n"
+        "⏳ Admin is reviewing your payment.\n"
+        "Your UC code will be sent here once confirmed!",
+        parse_mode="Markdown",
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 # ── Web App Data Handler ──────────────────────────────────────────────────
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw  = update.message.web_app_data.data
