@@ -202,6 +202,13 @@ async def run_server():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     is_admin = update.message.from_user.id == ADMIN_ID
+
+    # Set the menu button (bottom left ☰) to open the Mini App
+    await context.bot.set_chat_menu_button(
+        chat_id=update.message.chat_id,
+        menu_button={"type": "web_app", "text": "🚀 Store", "web_app": {"url": MINI_APP_URL}},
+    )
+
     kb = [
         [
             InlineKeyboardButton("🛍️ Browse Products", callback_data="show_packages"),
@@ -212,7 +219,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("💬 Support",          callback_data="support"),
         ],
         [
-            InlineKeyboardButton("🚀 Open Mini App",    web_app=WebAppInfo(url=MINI_APP_URL)),
+            InlineKeyboardButton("🚀 Open Mini App", web_app=WebAppInfo(url=MINI_APP_URL)),
         ],
     ]
     if is_admin:
