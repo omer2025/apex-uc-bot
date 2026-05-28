@@ -36,7 +36,7 @@ wallets:        dict = {}
 pending_orders: dict = {}
 code_store:     dict = {key: [] for key in PACKAGES}
 
-SELECT_PACKAGE, ENTER_PLAYER_ID, SELECT_PAYMENT, ADMIN_ADD_CODES = range(4)
+SELECT_PACKAGE, ENTER_PLAYER_ID, SELECT_PAYMENT, SEND_SCREENSHOT, ADMIN_ADD_CODES, ENTER_DEPOSIT_AMOUNT, WAIT_DEPOSIT_SCREENSHOT = range(7)
 
 bot_app = None  # set in main
 
@@ -203,11 +203,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     is_admin = update.message.from_user.id == ADMIN_ID
 
-    # Set the menu button (bottom left ☰) to open the Mini App
-    await context.bot.set_chat_menu_button(
-        chat_id=update.message.chat_id,
-        menu_button={"type": "web_app", "text": "🚀 Store", "web_app": {"url": MINI_APP_URL}},
-    )
+    # Set the menu button to open Mini App
+    try:
+        await context.bot.set_chat_menu_button(
+            chat_id=update.message.chat_id,
+            menu_button={"type": "web_app", "text": "🚀 Store", "web_app": {"url": MINI_APP_URL}},
+        )
+    except Exception as e:
+        logging.warning(f"Could not set menu button: {e}")
 
     kb = [
         [
@@ -217,9 +220,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("📋 My Orders",        callback_data="my_orders"),
             InlineKeyboardButton("💬 Support",          callback_data="support"),
-        ],
-        [
-            InlineKeyboardButton("🚀 Open Mini App", web_app=WebAppInfo(url=MINI_APP_URL)),
         ],
     ]
     if is_admin:
@@ -272,9 +272,6 @@ async def back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📋 My Orders",        callback_data="my_orders"),
             InlineKeyboardButton("💬 Support",          callback_data="support"),
         ],
-        [
-            InlineKeyboardButton("🚀 Open Mini App",    web_app=WebAppInfo(url=MINI_APP_URL)),
-        ],
     ]
     if is_admin:
         kb.append([InlineKeyboardButton("🗄️ Manage Codes", callback_data="admin_codes")])
@@ -291,17 +288,62 @@ async def my_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
     balance = wallets.get(user_id, 0)
-    kb = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_start")]]
+    kb = [
+        [InlineKeyboardButton("➕ Add Balance", callback_data="add_balance")],
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_start")],
+    ]
     await query.edit_message_text(
         f"💰 *My Wallet*\n\n"
-        f"👤 Telegram ID: `{user_id}`\n\n"
+        f"🆔 Telegram ID: `{user_id}`\n\n"
         f"💵 *Current Balance:*\n"
         f"*{balance} AFN*\n\n"
-        "To add balance, contact support or use the Mini App.",
+        "Tap *Add Balance* to top up your wallet.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
     )
     return SELECT_PACKAGE
+
+
+async def add_balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kb = [
+        [InlineKeyboardButton("📲 HesabPay",   callback_data="deposit_hesabpay")],
+        [InlineKeyboardButton("💎 USDT TRC20", callback_data="deposit_usdt")],
+        [InlineKeyboardButton("🔙 Back",       callback_data="my_wallet")],
+    ]
+    await query.edit_message_text(
+        "➕ *Add Wallet Balance*\n\n"
+        "Choose your payment method:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SELECT_PACKAGE
+
+
+async def deposit_instructions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    method = query.data.replace("deposit_", "")
+    context.user_data["deposit_method"] = method
+
+    if method == "hesabpay":
+        info = f"📲 *Send via HesabPay to:*\n\n`{HESABPAY_NUMBER}`"
+    else:
+        info = f"💎 *Send USDT (TRC20) to:*\n\n`{USDT_WALLET}`\n\n⚠️ TRC20 network only!"
+
+    kb = [[InlineKeyboardButton("🔙 Back", callback_data="add_balance")]]
+    await query.edit_message_text(
+        f"➕ *Add Wallet Balance*\n\n"
+        f"{info}\n\n"
+        "📸 After sending, reply with:\n"
+        "1️⃣ The *amount* you sent (e.g. `500`)\n"
+        "2️⃣ Your *payment screenshot*\n\n"
+        "Type the amount now:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return ENTER_DEPOSIT_AMOUNT
 
 
 async def my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -515,7 +557,87 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def enter_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid number e.g. `500`", parse_mode="Markdown")
+        return ENTER_DEPOSIT_AMOUNT
+
+    if amount < 50:
+        await update.message.reply_text("❌ Minimum deposit is 50 AFN.")
+        return ENTER_DEPOSIT_AMOUNT
+
+    context.user_data["deposit_amount"] = amount
+    method = context.user_data.get("deposit_method", "hesabpay")
+
+    await update.message.reply_text(
+        f"✅ Amount: *{amount} AFN*\n\n"
+        f"📸 Now send your payment screenshot:",
+        parse_mode="Markdown",
+    )
+    return WAIT_DEPOSIT_SCREENSHOT
+
+
+async def receive_deposit_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    amount  = context.user_data.get("deposit_amount")
+    method  = context.user_data.get("deposit_method", "hesabpay")
+    user    = update.message.from_user
+
+    if not amount:
+        await update.message.reply_text("❌ Session expired. Use /start again.")
+        return ConversationHandler.END
+
+    deposit_id = f"WALLET-{user.id}-{update.message.message_id}"
+    pending_wallet_deposits[deposit_id] = {
+        "user_id":    user.id,
+        "amount":     amount,
+        "username":   user.username or "N/A",
+        "first_name": user.first_name or "",
+    }
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirm", callback_data=f"wallet_confirm_{deposit_id}"),
+        InlineKeyboardButton("❌ Reject",  callback_data=f"wallet_reject_{deposit_id}"),
+    ]])
+
+    caption = (
+        f"💰 *WALLET DEPOSIT REQUEST*\n\n"
+        f"👤 {user.first_name} (@{user.username or 'N/A'})\n"
+        f"🆔 `{user.id}`\n"
+        f"Amount: *{amount} AFN*\n"
+        f"Method: *{method.upper()}*\n"
+        f"ID: `{deposit_id}`"
+    )
+
+    if update.message.photo:
+        await context.bot.send_photo(
+            ADMIN_ID,
+            update.message.photo[-1].file_id,
+            caption=caption,
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+    else:
+        await context.bot.send_message(
+            ADMIN_ID,
+            caption + "\n\n⚠️ No screenshot sent!",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    await update.message.reply_text(
+        f"✅ *Deposit request sent!*\n\n"
+        f"Amount: *{amount} AFN*\n\n"
+        "Admin will confirm your payment shortly.\n"
+        "Once confirmed your wallet will be updated automatically! ⏳",
+        parse_mode="Markdown",
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+
     context.user_data.clear()
     await update.message.reply_text("Cancelled. Use /start to begin again.")
     return ConversationHandler.END
@@ -536,12 +658,14 @@ async def main():
         ],
         states={
             SELECT_PACKAGE: [
-                CallbackQueryHandler(show_packages,  pattern="^show_packages$"),
-                CallbackQueryHandler(select_package, pattern="^pkg_"),
-                CallbackQueryHandler(back_start,     pattern="^back_start$"),
-                CallbackQueryHandler(my_wallet,      pattern="^my_wallet$"),
-                CallbackQueryHandler(my_orders,      pattern="^my_orders$"),
-                CallbackQueryHandler(support,        pattern="^support$"),
+                CallbackQueryHandler(show_packages,       pattern="^show_packages$"),
+                CallbackQueryHandler(select_package,      pattern="^pkg_"),
+                CallbackQueryHandler(back_start,          pattern="^back_start$"),
+                CallbackQueryHandler(my_wallet,           pattern="^my_wallet$"),
+                CallbackQueryHandler(add_balance_menu,    pattern="^add_balance$"),
+                CallbackQueryHandler(deposit_instructions,pattern="^deposit_"),
+                CallbackQueryHandler(my_orders,           pattern="^my_orders$"),
+                CallbackQueryHandler(support,             pattern="^support$"),
             ],
             ENTER_PLAYER_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_player_id),
@@ -551,6 +675,15 @@ async def main():
                 CallbackQueryHandler(select_payment, pattern="^pay_"),
                 CallbackQueryHandler(show_packages,  pattern="^show_packages$"),
                 CallbackQueryHandler(back_start,     pattern="^back_start$"),
+            ],
+            SEND_SCREENSHOT: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_screenshot),
+            ],
+            ENTER_DEPOSIT_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_deposit_amount),
+            ],
+            WAIT_DEPOSIT_SCREENSHOT: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_deposit_screenshot),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
