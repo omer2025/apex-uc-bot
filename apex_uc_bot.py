@@ -643,6 +643,88 @@ async def receive_deposit_screenshot(update: Update, context: ContextTypes.DEFAU
     return ConversationHandler.END
 
 
+
+# ── Web App Data Handler ──────────────────────────────────────────────────
+async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw  = update.message.web_app_data.data
+    user = update.message.from_user
+    try:
+        data = json.loads(raw)
+    except Exception:
+        await update.message.reply_text("❌ Invalid data from app.")
+        return
+
+    dtype = data.get("type")
+
+    if dtype == "deposit":
+        amount = data.get("amount", 0)
+        method = data.get("method", "hesabpay")
+        if amount < 50:
+            await update.message.reply_text("❌ Minimum deposit is 50 AFN.")
+            return
+        deposit_id = f"WALLET-{user.id}-{update.message.message_id}"
+        pending_wallet_deposits[deposit_id] = {
+            "user_id": user.id, "amount": amount,
+            "username": user.username or "N/A", "first_name": user.first_name or "",
+        }
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Confirm", callback_data=f"wallet_confirm_{deposit_id}"),
+            InlineKeyboardButton("❌ Reject",  callback_data=f"wallet_reject_{deposit_id}"),
+        ]])
+        pay_info = USDT_WALLET if method == "usdt" else HESABPAY_NUMBER
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"💰 *WALLET DEPOSIT REQUEST*\n\n"
+            f"👤 {user.first_name} (@{user.username or 'N/A'})\n"
+            f"🆔 `{user.id}`\n"
+            f"Amount: *{amount} AFN*\n"
+            f"Method: *{method.upper()}*\n"
+            f"Deposit ID: `{deposit_id}`",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+        await update.message.reply_text(
+            f"✅ *Deposit Request Received!*\n\n"
+            f"Amount: *{amount} AFN*\n"
+            f"Send payment to:\n`{pay_info}`\n\n"
+            "Admin will confirm shortly. Your wallet will update automatically! ⏳",
+            parse_mode="Markdown",
+        )
+
+    elif dtype == "order":
+        pkg_key = data.get("pkg")
+        pid     = data.get("pid")
+        payment = data.get("payment")
+        pkg     = PACKAGES.get(pkg_key)
+        if not pkg:
+            await update.message.reply_text("❌ Invalid package.")
+            return
+        price = f"${pkg['usd']}" if payment == "usdt" else f"{pkg['afn']} AFN"
+        if payment == "wallet":
+            balance = wallets.get(user.id, 0)
+            if balance < pkg["afn"]:
+                await update.message.reply_text(f"❌ Not enough balance.\nYours: *{balance} AFN*\nNeeded: *{pkg['afn']} AFN*", parse_mode="Markdown")
+                return
+            if not code_store.get(pkg_key):
+                await update.message.reply_text("❌ Out of stock. Contact support.")
+                return
+            wallets[user.id] = balance - pkg["afn"]
+            code = code_store[pkg_key].pop(0)
+            await context.bot.send_message(ADMIN_ID, f"🎮 *WALLET ORDER*\n\n`{user.id}`\n{pkg['uc']} UC → `{pid}`\nCode: `{code}`", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ *Code Delivered!*\n\n🎮 {pkg['uc']} UC\n🎯 `{pid}`\n\n🔑 *Code:*\n`{code}`\n\nThank you! 🇦🇫", parse_mode="Markdown")
+            return
+        order_id = f"ORDER-{user.id}-{update.message.message_id}"
+        pending_orders[order_id] = {"user_id": user.id, "pkg_key": pkg_key, "player_id": pid, "payment": payment, "price": price}
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Confirm & Send Code", callback_data=f"order_confirm_{order_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"order_reject_{order_id}"),
+        ]])
+        await context.bot.send_message(ADMIN_ID,
+            f"🔔 *NEW ORDER (Mini App)*\n\n👤 {user.first_name} `{user.id}`\n🎮 {pkg['uc']} UC — {price}\n🎯 `{pid}`\n💳 {payment.upper()}\nStock: {len(code_store.get(pkg_key,[]))}",
+            parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_text(f"✅ *Order Received!*\n\n🎮 {pkg['uc']} UC — {price}\n🎯 `{pid}`\n\nSend screenshot here and we'll confirm! ⏳", parse_mode="Markdown")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 async def main():
     global bot_app
@@ -698,7 +780,10 @@ async def main():
     application.add_handler(buy_conv)
     application.add_handler(code_conv)
     application.add_handler(CommandHandler("stock", stock_command))
-    application.add_handler(CallbackQueryHandler(admin_codes_menu, pattern="^admin_codes$"))
+    application.add_handler(CallbackQueryHandler(admin_codes_menu,    pattern="^admin_codes$"))
+    application.add_handler(CallbackQueryHandler(wallet_admin_action, pattern="^wallet_(confirm|reject)_"))
+    application.add_handler(CallbackQueryHandler(order_admin_action,  pattern="^order_(confirm|reject)_"))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
 
     # Start webhook server and bot together
     await run_server()
