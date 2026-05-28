@@ -203,16 +203,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     is_admin = update.message.from_user.id == ADMIN_ID
     kb = [
-        [InlineKeyboardButton("⚡ Quick Buy — 60 UC (60 AFN)", callback_data="pkg_60UC")],
-        [InlineKeyboardButton("🎮 All Packages",               callback_data="show_packages")],
-        [InlineKeyboardButton("🚀 Open Mini App",              web_app=WebAppInfo(url=MINI_APP_URL))],
+        [
+            InlineKeyboardButton("🛍️ Browse Products", callback_data="show_packages"),
+            InlineKeyboardButton("💰 My Wallet",        callback_data="my_wallet"),
+        ],
+        [
+            InlineKeyboardButton("📋 My Orders",        callback_data="my_orders"),
+            InlineKeyboardButton("💬 Support",          callback_data="support"),
+        ],
+        [
+            InlineKeyboardButton("🚀 Open Mini App",    web_app=WebAppInfo(url=MINI_APP_URL)),
+        ],
     ]
     if is_admin:
         kb.append([InlineKeyboardButton("🗄️ Manage Codes", callback_data="admin_codes")])
+
     await update.message.reply_text(
         "🏪 *Welcome to Apex Digital House!*\n\n"
         "Afghanistan's #1 PUBG UC Store 🇦🇫\n\n"
-        "✅ Fast delivery\n✅ Best prices\n✅ 24/7 support\n\n"
+        "✅ Fast delivery\n"
+        "✅ Best prices\n"
+        "✅ 24/7 support\n\n"
         "Choose an option below:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
@@ -228,7 +239,7 @@ async def show_packages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = len(code_store.get(key, []))
         icon  = "✅" if count > 0 else "❌"
         kb.append([InlineKeyboardButton(
-            f"{icon} {pkg['uc']} UC — {pkg['afn']} AFN / ${pkg['usd']}",
+            f"{icon} {pkg['uc']} UC — {pkg['afn']} AFN",
             callback_data=f"pkg_{key}"
         )])
     kb.append([InlineKeyboardButton("🔙 Back", callback_data="back_start")])
@@ -246,14 +257,69 @@ async def back_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     is_admin = query.from_user.id == ADMIN_ID
     kb = [
-        [InlineKeyboardButton("⚡ Quick Buy — 60 UC (60 AFN)", callback_data="pkg_60UC")],
-        [InlineKeyboardButton("🎮 All Packages",               callback_data="show_packages")],
-        [InlineKeyboardButton("🚀 Open Mini App",              web_app=WebAppInfo(url=MINI_APP_URL))],
+        [
+            InlineKeyboardButton("🛍️ Browse Products", callback_data="show_packages"),
+            InlineKeyboardButton("💰 My Wallet",        callback_data="my_wallet"),
+        ],
+        [
+            InlineKeyboardButton("📋 My Orders",        callback_data="my_orders"),
+            InlineKeyboardButton("💬 Support",          callback_data="support"),
+        ],
+        [
+            InlineKeyboardButton("🚀 Open Mini App",    web_app=WebAppInfo(url=MINI_APP_URL)),
+        ],
     ]
     if is_admin:
         kb.append([InlineKeyboardButton("🗄️ Manage Codes", callback_data="admin_codes")])
     await query.edit_message_text(
         "🏪 *Welcome to Apex Digital House!*\n\nChoose an option below:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SELECT_PACKAGE
+
+
+async def my_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    balance = wallets.get(user_id, 0)
+    kb = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_start")]]
+    await query.edit_message_text(
+        f"💰 *My Wallet*\n\n"
+        f"👤 Telegram ID: `{user_id}`\n\n"
+        f"💵 *Current Balance:*\n"
+        f"*{balance} AFN*\n\n"
+        "To add balance, contact support or use the Mini App.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SELECT_PACKAGE
+
+
+async def my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kb = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_start")]]
+    await query.edit_message_text(
+        "📋 *My Orders*\n\n"
+        "Your recent orders will appear here.\n\n"
+        "To place a new order tap *Browse Products*.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return SELECT_PACKAGE
+
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kb = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_start")]]
+    await query.edit_message_text(
+        "💬 *Support & Help*\n\n"
+        f"✈️ Telegram: {TELEGRAM_SUPPORT}\n"
+        f"📲 WhatsApp: +93 789 077 537\n\n"
+        "⏳ We respond within 30 minutes!",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
     )
@@ -273,7 +339,7 @@ async def select_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["package"] = pkg_key
     await query.edit_message_text(
         f"✅ *{pkg['uc']} UC selected*\n\n"
-        f"💰 Price: *{pkg['afn']} AFN* / *${pkg['usd']}*\n\n"
+        f"💰 Price: *{pkg['afn']} AFN*\n\n"
         "📝 Please enter your *PUBG Mobile Player ID*:\n\n"
         "How to find it:\n"
         "1️⃣ Open PUBG Mobile\n"
@@ -301,7 +367,7 @@ async def enter_player_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ Player ID: *{player_id}*\n"
         f"🎮 Package: *{pkg['uc']} UC*\n"
-        f"💰 Price: *{pkg['afn']} AFN* / *${pkg['usd']}*\n\n"
+        f"💰 Price: *{pkg['afn']} AFN*\n\n"
         f"💳 Your wallet balance: *{balance} AFN*\n\n"
         "⚠️ *Double-check your Player ID!*\n\n"
         "Select payment method:",
@@ -466,6 +532,9 @@ async def main():
                 CallbackQueryHandler(show_packages,  pattern="^show_packages$"),
                 CallbackQueryHandler(select_package, pattern="^pkg_"),
                 CallbackQueryHandler(back_start,     pattern="^back_start$"),
+                CallbackQueryHandler(my_wallet,      pattern="^my_wallet$"),
+                CallbackQueryHandler(my_orders,      pattern="^my_orders$"),
+                CallbackQueryHandler(support,        pattern="^support$"),
             ],
             ENTER_PLAYER_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_player_id),
